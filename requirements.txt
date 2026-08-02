@@ -1,0 +1,14 @@
+fastapi
+uvicorn[standard]
+langgraph
+langchain
+langchain-openai
+langchain-text-splitters
+beautifulsoup4
+requests
+tiktoken
+python-dotenv
+sqlalchemy
+psycopg[binary]
+email-validator
+PyJWT[crypto]

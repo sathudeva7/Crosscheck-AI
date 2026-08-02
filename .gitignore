@@ -1,0 +1,38 @@
+# --- secrets -----------------------------------------------------------------
+# .env holds the OpenAI key and the database password. .env.example is the
+# committed template; anything else named .env belongs to one machine only.
+.env
+.env.*
+!.env.example
+
+# --- patient data ------------------------------------------------------------
+# Uploaded medical documents. Real prescriptions and lab reports with real names
+# in them — this must never reach a repository, public or private. The directory
+# itself is kept via .gitkeep so a fresh clone can run without creating it.
+uploads/*
+!uploads/.gitkeep
+
+# --- generated and downloadable ----------------------------------------------
+# DDInter's interaction tables, ~28 MB, fetched by `python -m app.db.seed_drugs`.
+data/ddinter/
+data/ddinter_rxcui.json
+# Answers already looked up from RxNorm. Rebuilds itself as documents are read.
+data/drug_cache.json
+
+# --- environments ------------------------------------------------------------
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+
+node_modules/
+dist/
+*.tsbuildinfo
+
+# --- editors and OS ----------------------------------------------------------
+.DS_Store
+.idea/
+*.swp

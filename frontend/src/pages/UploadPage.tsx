@@ -1,0 +1,516 @@
+/**
+ * Documents — what has been uploaded, and how to add more.
+ *
+ * The prototype's upload screen, moved inside the app shell as the Documents
+ * tab. Everything below the header is the prototype's: the dashed blueprint
+ * drop zone at `34px 24px` with its `rgba(89,128,166,.55)` border, the file
+ * rows at `11px 14px`, the 46px button and the footnote.
+ *
+ * The header is not. The prototype's version is a landing page — its own logo,
+ * its own wordmark, a 40px hero line — and all three are wrong here: the sidebar
+ * carries the logo 60px to the left, and a hero headline is not what a tab says.
+ * So it uses the same eyebrow / title / description as Timeline.
+ *
+ * The list is real. A row arrives with nothing but a filename and a size, and
+ * gains its provider, date, type and page count as the pipeline reads it — so
+ * the screen shows that filling in rather than waiting for it. Watching a file
+ * turn into "City Medical Lab · Jan 12, 2025 · Lab Report · 3 pp" is the app
+ * demonstrating the thing it is for.
+ */
+
+import { useCallback, useEffect, useRef, useState } from "react";
+import { useNavigate } from "react-router-dom";
+import { Corners } from "../components/chrome";
+import { useAuth } from "../lib/useAuth";
+import { ACCEPT_ATTRIBUTE, MAX_UPLOAD_MB, acceptFiles, formatSize } from "../lib/files";
+import type { PickedFile } from "../lib/files";
+import {
+  docTypeLabel,
+  formatDocDate,
+  isSettled,
+  listDocuments,
+  statusLabel,
+} from "../lib/documents";
+import type { DocumentRead } from "../lib/documents";
+import { useUpload } from "../lib/useUpload";
+import { describeError } from "../lib/errors";
+
+const MUTED = "rgba(29,31,32,.55)";
+
+/** How often to re-read the list while anything is still being processed. */
+const POLL_MS = 2500;
+
+function DocumentIcon({ tone = "var(--color-accent)" }: { tone?: string }) {
+  return (
+    <svg
+      width="18"
+      height="18"
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke={tone}
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+      aria-hidden
+    >
+      <path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z" />
+      <path d="M14 2v4a2 2 0 0 0 2 2h4" />
+    </svg>
+  );
+}
+
+/** One line in the list. Shared by every kind of row, so a sample, an upload in
+ *  flight and a finished document all read as the same kind of thing. */
+function FileRow({
+  title,
+  subtitle,
+  tag,
+  trailing,
+  tone = "normal",
+  busy,
+  onRemove,
+}: {
+  title: string;
+  subtitle: string;
+  tag?: string;
+  trailing?: string;
+  tone?: "normal" | "danger" | "pending";
+  busy?: boolean;
+  onRemove?: () => void;
+}) {
+  const danger = tone === "danger";
+  return (
+    <div
+      style={{
+        display: "flex",
+        alignItems: "center",
+        gap: 14,
+        padding: "11px 14px",
+        border: `1px solid ${danger ? "var(--color-danger)" : "var(--color-divider)"}`,
+        background: danger ? "var(--color-danger-bg)" : "var(--color-surface)",
+        // Not yet read: dimmed, so a finished document is visibly the settled
+        // state rather than just a longer line of text.
+        opacity: tone === "pending" ? 0.72 : 1,
+      }}
+    >
+      {busy ? (
+        <svg
+          width="18"
+          height="18"
+          viewBox="0 0 24 24"
+          fill="none"
+          stroke="var(--color-accent)"
+          strokeWidth="1.6"
+          strokeLinecap="round"
+          style={{ flex: "none", animation: "cc-spin 1.1s linear infinite" }}
+          aria-hidden
+        >
+          <path d="M21 12a9 9 0 1 1-6.219-8.56" />
+        </svg>
+      ) : (
+        <DocumentIcon tone={danger ? "var(--color-danger)" : "var(--color-accent)"} />
+      )}
+
+      <div style={{ flex: 1, minWidth: 0 }}>
+        <div
+          style={{
+            fontSize: 14,
+            fontWeight: 500,
+            whiteSpace: "nowrap",
+            overflow: "hidden",
+            textOverflow: "ellipsis",
+          }}
+          title={title}
+        >
+          {title}
+        </div>
+        <div style={{ fontSize: 12, color: danger ? "var(--color-danger-text)" : MUTED }}>
+          {subtitle}
+        </div>
+      </div>
+
+      {tag && <span className="tag tag-neutral">{tag}</span>}
+      {trailing && (
+        <span style={{ fontSize: 12, color: "rgba(29,31,32,.4)", width: 52, textAlign: "right" }}>
+          {trailing}
+        </span>
+      )}
+      {onRemove && (
+        <button
+          type="button"
+          className="btn-link"
+          onClick={onRemove}
+          aria-label={`Remove ${title}`}
+          style={{ display: "grid", placeItems: "center", flex: "none" }}
+        >
+          <svg
+            width="15"
+            height="15"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="currentColor"
+            strokeWidth="1.6"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M18 6 6 18" />
+            <path d="m6 6 12 12" />
+          </svg>
+        </button>
+      )}
+    </div>
+  );
+}
+
+/** A stored document, however far through the pipeline it is. */
+function DocumentRow({ document }: { document: DocumentRead }) {
+  const failed = document.status === "failed";
+  const settled = isSettled(document);
+  const state = statusLabel(document.status);
+
+  // Falls back through what is actually known: the summary once extracted, the
+  // filename before that. Never an empty line.
+  const title = document.summary?.trim() || document.filename || "Untitled document";
+
+  const details = [document.provider, formatDocDate(document.doc_date)].filter(Boolean).join(" · ");
+
+  const subtitle = failed
+    ? document.error_message || "Could not be read"
+    : details || state || formatSize(document.size_bytes ?? 0);
+
+  return (
+    <FileRow
+      title={title}
+      subtitle={subtitle}
+      tag={settled && !failed ? docTypeLabel(document.doc_type) : (state ?? undefined)}
+      trailing={document.page_count ? `${document.page_count} pp` : undefined}
+      tone={failed ? "danger" : settled ? "normal" : "pending"}
+      busy={!settled}
+    />
+  );
+}
+
+export default function UploadPage() {
+  const { getToken } = useAuth();
+  const navigate = useNavigate();
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  const [picked, setPicked] = useState<PickedFile[]>([]);
+  const [dragging, setDragging] = useState(false);
+  const [documents, setDocuments] = useState<DocumentRead[] | null>(null);
+  const [listError, setListError] = useState<string | null>(null);
+
+  const { outcomes, busy, start, reset } = useUpload();
+
+  const refresh = useCallback(async () => {
+    try {
+      setDocuments(await listDocuments(await getToken()));
+      setListError(null);
+    } catch (problem) {
+      setListError(describeError(problem));
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  // Poll only while something is still moving. A list of finished documents
+  // does not change on its own, and polling it forever would be a request every
+  // few seconds for an answer that is already known.
+  const working = documents?.some((doc) => !isSettled(doc)) ?? false;
+  useEffect(() => {
+    if (!working) return;
+    const timer = setInterval(() => void refresh(), POLL_MS);
+    return () => clearInterval(timer);
+  }, [working, refresh]);
+
+  const usable = picked.filter((row) => row.problem === null);
+  const hasDocuments = (documents?.length ?? 0) > 0;
+  // `documents !== null` matters: before the first response there is nothing to
+  // be empty about, and saying "no documents yet" then would be a guess.
+  const isEmpty = documents !== null && !hasDocuments && picked.length === 0 && !listError;
+
+  function add(files: FileList | File[]) {
+    setPicked((current) => [...current, ...acceptFiles(files, current)]);
+  }
+
+  function onDrop(event: React.DragEvent) {
+    event.preventDefault();
+    setDragging(false);
+    if (event.dataTransfer.files.length > 0) add(event.dataTransfer.files);
+  }
+
+  async function analyse() {
+    const created = await start(usable);
+    await refresh();
+
+    // Anything at all got through: the processing screen has something real to
+    // follow. Nothing did: stay here, where each row says why it failed.
+    if (created.length > 0) {
+      setPicked([]);
+      reset();
+      navigate("/processing");
+    }
+  }
+
+  return (
+    <div className="cc-rise">
+      <div style={{ maxWidth: 760 }}>
+        <h6 style={{ color: "var(--color-accent)", marginBottom: 4 }}>Sources</h6>
+        <h2 style={{ margin: "0 0 6px", fontSize: 30 }}>Documents</h2>
+        <p style={{ color: "rgba(29,31,32,.65)", maxWidth: "64ch", marginBottom: 26 }}>
+          Upload lab reports, prescriptions, discharge summaries and doctor's notes from any visit
+          or provider. CrossCheck reads them, merges them into a single patient timeline, and flags
+          drug interactions, duplicates, conflicting doses and lab trends.
+        </p>
+
+        {/* The whole panel is the target — clicking it opens the picker, so the
+            "Browse files" button is a label for what the panel does rather than
+            the only way in. */}
+        <div
+          className="card blueprint"
+          role="button"
+          tabIndex={0}
+          aria-label="Add medical documents"
+          onClick={() => inputRef.current?.click()}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" || e.key === " ") {
+              e.preventDefault();
+              inputRef.current?.click();
+            }
+          }}
+          onDragOver={(e) => {
+            // Without this the browser navigates to the dropped file instead.
+            e.preventDefault();
+            setDragging(true);
+          }}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
+          style={{
+            padding: "34px 24px",
+            alignItems: "center",
+            textAlign: "center",
+            gap: 8,
+            cursor: "pointer",
+            borderStyle: "dashed",
+            borderColor: dragging ? "var(--color-accent)" : "rgba(89,128,166,.55)",
+            background: dragging ? "rgba(89,128,166,.06)" : undefined,
+          }}
+        >
+          <Corners />
+          <svg
+            width="34"
+            height="34"
+            viewBox="0 0 24 24"
+            fill="none"
+            stroke="var(--color-accent)"
+            strokeWidth="1.4"
+            strokeLinecap="round"
+            strokeLinejoin="round"
+            aria-hidden
+          >
+            <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+            <polyline points="17 8 12 3 7 8" />
+            <line x1="12" x2="12" y1="3" y2="15" />
+          </svg>
+          <div
+            style={{
+              fontFamily: "var(--font-heading)",
+              fontWeight: 600,
+              fontSize: 19,
+              marginTop: 4,
+            }}
+          >
+            {dragging ? "Release to add" : "Drop medical documents here"}
+          </div>
+          <div style={{ fontSize: 13, color: MUTED }}>
+            PDF, JPG or PNG · lab reports · prescriptions · discharge summaries · notes
+          </div>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ marginTop: 12 }}
+            onClick={(e) => {
+              // The panel behind this opens the picker too; without stopping
+              // here it would open twice.
+              e.stopPropagation();
+              inputRef.current?.click();
+            }}
+          >
+            Browse files
+          </button>
+        </div>
+
+        {/*
+          Outside the drop zone, and it has to be. `input.click()` dispatches a
+          real click that bubbles: with the input nested inside the panel, that
+          click reached the panel's own onClick, which called `input.click()`
+          again — and a browser will not open a file picker inside that loop. The
+          picker simply never appeared.
+        */}
+        <input
+          ref={inputRef}
+          type="file"
+          multiple
+          accept={ACCEPT_ATTRIBUTE}
+          hidden
+          onChange={(e) => {
+            if (e.target.files) add(e.target.files);
+            // Reset, or picking the same file twice in a row fires nothing.
+            e.target.value = "";
+          }}
+        />
+
+        {/* --- files waiting to be uploaded ------------------------------- */}
+        {picked.length > 0 && (
+          <>
+            <div style={headerRow}>
+              <h6 style={{ margin: 0 }}>
+                Ready to upload · {picked.length} {picked.length === 1 ? "file" : "files"}
+              </h6>
+              <button
+                type="button"
+                className="btn-link"
+                style={{ fontSize: 12 }}
+                onClick={() => {
+                  setPicked([]);
+                  reset();
+                }}
+                disabled={busy}
+              >
+                Clear
+              </button>
+            </div>
+
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {picked.map((row) => {
+                const outcome = outcomes[row.id];
+                const failed = row.problem !== null || outcome?.state === "failed";
+                const subtitle =
+                  row.problem ??
+                  (outcome?.state === "failed"
+                    ? outcome.error
+                    : outcome?.state === "done"
+                      ? outcome.duplicate
+                        ? "Already uploaded — using the copy on file"
+                        : "Uploaded"
+                      : outcome?.state === "uploading"
+                        ? "Uploading…"
+                        : formatSize(row.file.size));
+
+                return (
+                  <FileRow
+                    key={row.id}
+                    title={row.file.name}
+                    subtitle={subtitle}
+                    tone={failed ? "danger" : "normal"}
+                    busy={outcome?.state === "uploading"}
+                    onRemove={
+                      busy
+                        ? undefined
+                        : () => setPicked((c) => c.filter((r) => r.id !== row.id))
+                    }
+                  />
+                );
+              })}
+            </div>
+
+            <button
+              className="btn btn-primary btn-block"
+              style={{ marginTop: 22, height: 46, fontSize: 16 }}
+              disabled={usable.length === 0 || busy}
+              onClick={() => void analyse()}
+            >
+              {busy
+                ? "Uploading…"
+                : usable.length === 0
+                  ? `Add a file under ${MAX_UPLOAD_MB} MB to continue`
+                  : `Analyze ${usable.length} document${usable.length === 1 ? "" : "s"} →`}
+            </button>
+          </>
+        )}
+
+        {/* --- what is already stored ------------------------------------- */}
+        {listError && (
+          <div style={{ marginTop: 26 }}>
+            <div style={headerRow}>
+              <h6 style={{ margin: 0 }}>Your documents</h6>
+              <button
+                type="button"
+                className="btn-link"
+                style={{ fontSize: 12 }}
+                onClick={() => void refresh()}
+              >
+                Try again
+              </button>
+            </div>
+            <div
+              style={{
+                padding: "11px 14px",
+                border: "1px solid var(--color-danger)",
+                background: "var(--color-danger-bg)",
+                color: "var(--color-danger-text)",
+                fontSize: 13,
+              }}
+            >
+              {listError}
+            </div>
+          </div>
+        )}
+
+        {hasDocuments && (
+          <>
+            <div style={headerRow}>
+              <h6 style={{ margin: 0 }}>
+                Your documents · {documents!.length}{" "}
+                {documents!.length === 1 ? "file" : "files"}
+              </h6>
+              <span style={{ fontSize: 12, color: "rgba(29,31,32,.5)" }}>
+                {working ? "Reading…" : "All read"}
+              </span>
+            </div>
+            <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+              {documents!.map((doc) => (
+                <DocumentRow key={doc.id} document={doc} />
+              ))}
+            </div>
+          </>
+        )}
+
+        {/* Nothing stored and nothing waiting: say so plainly. Filling this
+            space with an example would only leave the user unsure which rows
+            were theirs. */}
+        {isEmpty && (
+          <div style={{ ...headerRow, justifyContent: "flex-start" }}>
+            <span style={{ fontSize: 13, color: MUTED }}>
+              No documents yet. Drop a file above to get started.
+            </span>
+          </div>
+        )}
+
+        <p
+          style={{
+            textAlign: "center",
+            fontSize: 12,
+            color: "rgba(29,31,32,.45)",
+            marginTop: 22,
+          }}
+        >
+          Documents are processed for reconciliation only and are never used to make a diagnosis.
+        </p>
+      </div>
+    </div>
+  );
+}
+
+const headerRow: React.CSSProperties = {
+  display: "flex",
+  alignItems: "baseline",
+  justifyContent: "space-between",
+  margin: "26px 0 10px",
+  gap: 12,
+  flexWrap: "wrap",
+};

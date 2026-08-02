@@ -1,0 +1,30 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta
+      name="description"
+      content="CrossCheck reconciles medical documents into one timeline and cross-checks them for drug interactions, duplicates and conflicting doses. Informational only — not a diagnosis."
+    />
+
+    <!--
+      Barlow and Barlow Condensed are the design system's two faces. Preconnect
+      first so the fonts are already in flight when the CSS asks for them;
+      without it the headings visibly reflow on first paint.
+    -->
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Barlow:wght@400;500;700&family=Barlow+Condensed:wght@400;600&display=swap"
+      rel="stylesheet"
+    />
+
+    <title>CrossCheck · Medical Record Reconciler</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>
