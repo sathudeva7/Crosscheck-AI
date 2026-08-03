@@ -1,0 +1,21 @@
+# Keep the build context small and, more importantly, keep two things out of
+# the image entirely: real patient documents, and the secrets in .env.
+
+.venv/
+__pycache__/
+*.pyc
+
+# Uploaded medical documents. Real prescriptions with real names in them —
+# these must never be baked into an image that gets pushed to a registry.
+uploads/
+data/
+
+.env
+.env.*
+!.env.example
+
+frontend/
+.git/
+.gitignore
+README.md
+*.md

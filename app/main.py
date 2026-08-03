@@ -1,5 +1,9 @@
-"""Example FastAPI entrypoint. If you already have a main.py, just copy the
-lifespan + include_router bits into yours."""
+"""The CrossCheck API.
+
+Reads uploaded medical documents, merges what they contain into one timeline
+per patient, cross-checks that timeline for drug interactions, duplicates,
+dose conflicts and lab trends, and answers questions about it.
+"""
 
 from contextlib import asynccontextmanager
 
@@ -27,7 +31,16 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Agentic RAG API", lifespan=lifespan)
+app = FastAPI(
+    title="CrossCheck API",
+    description=(
+        "Cross-checks a patient's own medical documents. Every answer names the "
+        "records it was built from and how well they were read. None of it is a "
+        "diagnosis."
+    ),
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 # The browser refuses every cross-origin call without this. Identity travels in
 # the Authorization header rather than a cookie, so credentials stay off: the

@@ -1,0 +1,6 @@
+# Netlify's equivalent of the rewrite in vercel.json. Harmless on Vercel.
+#
+# Client-side routing means /app/timeline is not a file on the host. Without
+# this, a refresh or a shared link returns a 404 from the CDN before React ever
+# loads — the app appears to work until someone reloads a page.
+/*    /index.html   200

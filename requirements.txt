@@ -1,14 +1,50 @@
-fastapi
-uvicorn[standard]
-langgraph
-langchain
-langchain-openai
-langchain-text-splitters
-beautifulsoup4
-requests
-tiktoken
-python-dotenv
-sqlalchemy
-psycopg[binary]
-email-validator
-PyJWT[crypto]
+# Pinned exactly, not loosely.
+#
+# The agent is built against a specific LangChain and LangGraph, and both have
+# changed their APIs across major versions. An unpinned install resolves to
+# whatever is newest on the day the host builds, which is how an app that runs
+# on a laptop fails to start in production with an import error.
+#
+# Verified against Python 3.13.
+
+# --- web ---------------------------------------------------------------------
+fastapi==0.141.1
+uvicorn[standard]==0.52.0
+# Required by FastAPI to parse multipart bodies. Without it every document
+# upload fails during request parsing, before any of our code runs.
+python-multipart==0.0.32
+pydantic==2.13.4
+email-validator==2.3.0
+
+# --- database ----------------------------------------------------------------
+SQLAlchemy==2.0.51
+# The binary wheel: building psycopg from source needs libpq headers a slim
+# container image does not carry.
+psycopg[binary]==3.3.4
+
+# --- auth --------------------------------------------------------------------
+# The crypto extra supplies RS256, which is what Clerk signs its tokens with.
+PyJWT[crypto]==2.13.0
+
+# --- documents ---------------------------------------------------------------
+# Renders uploaded PDFs to page images for transcription. Every PDF upload
+# fails without it.
+pymupdf==1.28.0
+
+# --- model and agent ---------------------------------------------------------
+langchain==1.3.14
+langchain-core==1.5.3
+langchain-openai==1.4.1
+langchain-text-splitters==1.1.2
+langgraph==1.2.10
+tiktoken==0.13.0
+
+# --- outbound http -----------------------------------------------------------
+# httpx for RxNorm, RxClass and openFDA; requests and bs4 for the tutorial
+# loader that has not been removed yet.
+httpx==0.28.1
+requests==2.34.2
+beautifulsoup4==4.15.0
+
+# --- config ------------------------------------------------------------------
+python-dotenv==1.2.2
