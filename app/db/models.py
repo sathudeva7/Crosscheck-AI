@@ -13,6 +13,7 @@ from sqlalchemy import (
     BigInteger,
     Boolean,
     CheckConstraint,
+    Computed,
     Date,
     DateTime,
     ForeignKey,
@@ -23,7 +24,7 @@ from sqlalchemy import (
     UniqueConstraint,
     func,
 )
-from sqlalchemy.dialects.postgresql import ARRAY, JSONB
+from sqlalchemy.dialects.postgresql import ARRAY, JSONB, TSVECTOR
 from sqlalchemy.dialects.postgresql import UUID as PgUUID
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
@@ -255,6 +256,14 @@ class DocumentPage(Base):
     transcription: Mapped[str | None] = mapped_column(Text)
     transcription_model: Mapped[str | None] = mapped_column(String)
     transcribed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+    # Written by Postgres from `transcription`, never by us. Deferred because
+    # nothing outside search wants it and it is roughly the size of the page.
+    search_vector: Mapped[Any | None] = mapped_column(
+        TSVECTOR,
+        Computed("to_tsvector('english', coalesce(transcription, ''))", persisted=True),
+        deferred=True,
+    )
 
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False

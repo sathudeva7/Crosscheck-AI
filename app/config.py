@@ -95,6 +95,22 @@ EXPLAIN_MODEL = os.getenv("EXPLAIN_MODEL", EXTRACT_MODEL)
 # Turn off to run ingestion with no network and no drug identification.
 ENABLE_DRUG_LOOKUP = os.getenv("ENABLE_DRUG_LOOKUP", "1") not in ("0", "false", "False")
 
+# --- interaction fallbacks ---------------------------------------------------
+
+# The FDA's own label text, consulted only when DDInter has no rule for a pair.
+# Free and needs no key; 240 requests a minute is far more than this uses.
+# Answers with a quotable sentence rather than a verdict.
+OPENFDA_BASE_URL = os.getenv("OPENFDA_BASE_URL", "https://api.fda.gov")
+OPENFDA_TIMEOUT = float(os.getenv("OPENFDA_TIMEOUT", 15))
+ENABLE_OPENFDA = os.getenv("ENABLE_OPENFDA", "1") not in ("0", "false", "False")
+
+# --- answering questions -------------------------------------------------------
+
+# How long one question may take before the caller is told plainly that it
+# failed. There is a browser waiting; an unexplained hang is worse than a
+# stated timeout.
+QA_TIMEOUT_SECONDS = float(os.getenv("QA_TIMEOUT_SECONDS", 120))
+
 # --- authentication ----------------------------------------------------------
 
 # Clerk issues the session token; we verify it against Clerk's public keys.

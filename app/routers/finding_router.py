@@ -50,14 +50,57 @@ def list_findings(
         key=lambda f: (SEVERITY_RANK.get(f.severity, 9), f.title),
     )
 
+    scores = _confidences(db, findings)
+
     return FindingListRead(
         coverage=_coverage(db, patient.id),
         counts={
             level: sum(1 for f in findings if f.severity == level)
             for level in ("danger", "warning", "info")
         },
-        findings=[FindingRead.model_validate(f) for f in findings],
+        findings=[
+            FindingRead.model_validate(f).model_copy(update={"confidence": scores.get(f.id)})
+            for f in findings
+        ],
     )
+
+
+def _confidences(db: Session, findings: list[Finding]) -> dict[UUID, float]:
+    """How well each finding's underlying rows were read.
+
+    A finding is as sound as the shakiest fact it stands on: an interaction
+    between two drugs, one of them read off a handwritten prescription, cannot
+    be reported as firmly as the same pair read from two printed ones. Taking
+    the minimum is the same rule the answer confidence uses in app/rag/agent.py,
+    and it must stay the same — two numbers on the same subject that disagree
+    are worse than one.
+
+    This is not a probability that the finding is real. Whether it exists was
+    decided by SQL against the interaction rules; this says only how well we
+    read the drugs it is about.
+    """
+    wanted = {event_id for finding in findings for event_id in finding.event_ids}
+    if not wanted:
+        return {}
+
+    read = dict(
+        db.execute(
+            select(TimelineEvent.id, TimelineEvent.confidence).where(
+                TimelineEvent.id.in_(wanted)
+            )
+        ).all()
+    )
+
+    scores: dict[UUID, float] = {}
+    for finding in findings:
+        known = [
+            read[event_id]
+            for event_id in finding.event_ids
+            if read.get(event_id) is not None
+        ]
+        if known:
+            scores[finding.id] = float(min(known))
+    return scores
 
 
 def _coverage(db: Session, patient_id: UUID) -> CheckCoverage:

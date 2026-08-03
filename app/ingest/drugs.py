@@ -324,12 +324,49 @@ async def _resolve_uncached(client: httpx.AsyncClient, raw: str) -> DrugIdentity
     rxcui = await rxcui_for_name(client, cleaned)
     if rxcui:
         ingredients = await ingredients_for_rxcui(client, rxcui)
-        # A concept with no ingredient link is a foreign brand RxNorm knows the
-        # name of but nothing else about — fall through to the model.
-        if ingredients or (await _is_ingredient(client, rxcui)):
-            identity.ingredients = ingredients or [cleaned.lower()]
-            identity.rxcuis = [rxcui]
-            identity.atc = await _classify(client, [rxcui])
+
+        # RxNorm matches two kinds of concept here, and they need handling apart.
+        bare = await _is_ingredient(client, rxcui)
+
+        if bare:
+            # The name is an ingredient, so it resolves to itself and the
+            # ingredient list only repeats the query.
+            names, rxcuis = ingredients or [cleaned.lower()], [rxcui]
+        else:
+            # The name is a product, and `rxcui` is the *product's* id.
+            # Recording that would be a quiet disaster: DDInter's rules are keyed
+            # on ingredients, so a brand stored under its own id matches nothing
+            # and every interaction check on it comes back clean. Panadol and
+            # Voltaren both did exactly that — 0 rules each, silently.
+            #
+            # So look up each ingredient's own id, which is what the model route
+            # below has always done. It also makes brand and generic converge:
+            # Crocin and Panadol are both paracetamol, and a duplicate can only
+            # be spotted if they share an id.
+            names = [name.lower() for name in ingredients]
+            rxcuis = [
+                found
+                for name in ingredients
+                if (found := await rxcui_for_name(client, name))
+            ]
+
+        atc = await _classify(client, rxcuis) if rxcuis else []
+
+        # A bare ingredient must carry a WHO class to count as a medicine at all.
+        # That class is what separates a drug from any other chemical: 'crocin'
+        # is the pigment that makes saffron yellow, filed by RxNorm as an
+        # ingredient with no class — and without this test the route returns
+        # saffron extract, at 0.95, for India's most widely used paracetamol
+        # brand, with nothing about the result looking wrong.
+        #
+        # Falling through costs one model call and lands on 'model_verified' at a
+        # lower confidence, which is the right trade: a real ingredient with no
+        # ATC entry still resolves, just less certainly. Same if RxClass is
+        # unreachable and every lookup comes back empty.
+        if bool(atc) if bare else bool(rxcuis):
+            identity.ingredients = names
+            identity.rxcuis = rxcuis
+            identity.atc = atc
             identity.status = "verified"
             identity.source = "rxnorm_exact"
             identity.confidence = CONFIDENCE["rxnorm_exact"]

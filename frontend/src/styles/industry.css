@@ -63,6 +63,12 @@
   --color-danger: #a8453f;
   --color-danger-bg: #f7ebe9;
   --color-danger-text: #7c332d;
+
+  /* The middle severity. Distinct from danger at a glance and from the accent
+     in hue, so a moderate finding is never mistaken for either. */
+  --color-warning: #b0793a;
+  --color-warning-bg: #f7efe4;
+  --color-warning-text: #7d5623;
   --color-warn: #b0793a;
   --color-warn-bg: #f7efe4;
   --color-warn-text: #7d5623;
@@ -287,6 +293,7 @@ textarea.input { min-height: 90px; resize: vertical; }
 .tag-accent-2 { background: var(--color-accent-2-100); color: var(--color-accent-2-800); }
 .tag-neutral { background: var(--color-neutral-100); color: var(--color-neutral-800); }
 .tag-outline { border: 1px solid var(--color-accent); color: var(--color-accent); }
+.tag-danger { background: var(--color-danger-bg); color: var(--color-danger-text); }
 
 /* --- navigation ------------------------------------------------------------ */
 

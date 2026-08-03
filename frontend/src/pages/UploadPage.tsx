@@ -18,7 +18,7 @@
  * demonstrating the thing it is for.
  */
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { Corners } from "../components/chrome";
 import { useAuth } from "../lib/useAuth";
@@ -195,7 +195,6 @@ function DocumentRow({ document }: { document: DocumentRead }) {
 export default function UploadPage() {
   const { getToken } = useAuth();
   const navigate = useNavigate();
-  const inputRef = useRef<HTMLInputElement>(null);
 
   const [picked, setPicked] = useState<PickedFile[]>([]);
   const [dragging, setDragging] = useState(false);
@@ -267,21 +266,17 @@ export default function UploadPage() {
           drug interactions, duplicates, conflicting doses and lab trends.
         </p>
 
-        {/* The whole panel is the target — clicking it opens the picker, so the
-            "Browse files" button is a label for what the panel does rather than
-            the only way in. */}
+        {/* The panel is a drop target and nothing more.
+
+            It used to open the picker on click too, and that is what was
+            broken: the only way to do it is `input.click()` from inside a
+            click handler, and every attempt to make that reliable — moving the
+            input out, stopping propagation on the button — failed, while
+            dropping a file kept working because it never touches the input.
+            So the script is gone. The label below activates the input the way
+            the browser intends, and there is no second path left to fail. */}
         <div
           className="card blueprint"
-          role="button"
-          tabIndex={0}
-          aria-label="Add medical documents"
-          onClick={() => inputRef.current?.click()}
-          onKeyDown={(e) => {
-            if (e.key === "Enter" || e.key === " ") {
-              e.preventDefault();
-              inputRef.current?.click();
-            }
-          }}
           onDragOver={(e) => {
             // Without this the browser navigates to the dropped file instead.
             e.preventDefault();
@@ -294,7 +289,6 @@ export default function UploadPage() {
             alignItems: "center",
             textAlign: "center",
             gap: 8,
-            cursor: "pointer",
             borderStyle: "dashed",
             borderColor: dragging ? "var(--color-accent)" : "rgba(89,128,166,.55)",
             background: dragging ? "rgba(89,128,166,.06)" : undefined,
@@ -329,40 +323,28 @@ export default function UploadPage() {
           <div style={{ fontSize: 13, color: MUTED }}>
             PDF, JPG or PNG · lab reports · prescriptions · discharge summaries · notes
           </div>
-          <button
-            type="button"
-            className="btn btn-secondary"
-            style={{ marginTop: 12 }}
-            onClick={(e) => {
-              // The panel behind this opens the picker too; without stopping
-              // here it would open twice.
-              e.stopPropagation();
-              inputRef.current?.click();
-            }}
-          >
-            Browse files
-          </button>
-        </div>
+          {/* The input lives inside its label. Wrapping rather than pairing by
+              id makes the association structural — there is no name to get
+              wrong and no ref to be null — and clicking the label is what opens
+              the picker, natively.
 
-        {/*
-          Outside the drop zone, and it has to be. `input.click()` dispatches a
-          real click that bubbles: with the input nested inside the panel, that
-          click reached the panel's own onClick, which called `input.click()`
-          again — and a browser will not open a file picker inside that loop. The
-          picker simply never appeared.
-        */}
-        <input
-          ref={inputRef}
-          type="file"
-          multiple
-          accept={ACCEPT_ATTRIBUTE}
-          hidden
-          onChange={(e) => {
-            if (e.target.files) add(e.target.files);
-            // Reset, or picking the same file twice in a row fires nothing.
-            e.target.value = "";
-          }}
-        />
+              Hidden by size, not by `display: none`, so it stays focusable:
+              tabbing to it and pressing Enter opens the picker as well. */}
+          <label className="btn btn-secondary" style={{ marginTop: 12, cursor: "pointer" }}>
+            Browse files
+            <input
+              type="file"
+              multiple
+              accept={ACCEPT_ATTRIBUTE}
+              style={{ position: "absolute", width: 1, height: 1, opacity: 0 }}
+              onChange={(e) => {
+                if (e.target.files) add(e.target.files);
+                // Reset, or picking the same file twice in a row fires nothing.
+                e.target.value = "";
+              }}
+            />
+          </label>
+        </div>
 
         {/* --- files waiting to be uploaded ------------------------------- */}
         {picked.length > 0 && (

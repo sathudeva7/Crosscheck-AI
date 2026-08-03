@@ -12,6 +12,7 @@ from app.rag.embedder import build_index
 from app.routers.document_router import router as document_router
 from app.routers.finding_router import router as finding_router
 from app.routers.patient_router import router as patient_router
+from app.routers.qa_router import router as qa_router
 from app.routers.rag_router import router as rag_router
 from app.routers.timeline_router import router as timeline_router
 
@@ -42,4 +43,5 @@ app.include_router(patient_router)
 app.include_router(document_router)
 app.include_router(timeline_router)
 app.include_router(finding_router)
+app.include_router(qa_router)
 app.include_router(rag_router)

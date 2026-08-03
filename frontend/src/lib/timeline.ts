@@ -58,6 +58,11 @@ export interface TimelineEvent {
   reaction: string | null;
 
   details: Record<string, unknown>;
+
+  /** Computed by the API from the reference range, not by comparing here — it
+   *  still works when the lab printed no flag of its own. */
+  abnormal: boolean;
+
   confidence: string | null;
   review_status: ReviewStatus;
   review_reasons: string[] | null;
@@ -90,12 +95,22 @@ export interface TimelineCounts {
   needs_review: number;
 }
 
+/** How the cross-checks left this visit. Drives the dot on the rail. */
+export type Severity = "none" | "info" | "warning" | "danger";
+
 export interface TimelineVisit {
   id: string;
+  document_id: string | null;
   visit_date: string | null;
+  /** The date could be read two ways (04-07 is April or July). Worth showing. */
+  date_ambiguous: boolean;
+  date_raw: string | null;
   doc_type: string | null;
   provider: string | null;
+  clinician_name: string | null;
+  clinician_specialty: string | null;
   summary: string | null;
+  severity: Severity;
   events: TimelineEvent[];
 }
 

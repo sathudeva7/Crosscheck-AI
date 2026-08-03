@@ -7,10 +7,9 @@
  * `/patients/me` is not a failure, it is the answer.
  */
 
-const BASE_URL = (import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000").replace(
-  /\/+$/,
-  "",
-);
+export const BASE_URL = (
+  import.meta.env.VITE_API_BASE_URL ?? "http://localhost:8000"
+).replace(/\/+$/, "");
 
 export class ApiError extends Error {
   // Assigned in the body rather than as a constructor parameter property: the

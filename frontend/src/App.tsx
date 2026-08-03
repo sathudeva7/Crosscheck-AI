@@ -32,6 +32,8 @@ import ReviewPage from "./pages/ReviewPage";
 import SetupPage from "./pages/SetupPage";
 import SsoCallbackPage from "./pages/SsoCallbackPage";
 import TimelinePage from "./pages/TimelinePage";
+import ChatPage from "./pages/ChatPage";
+import InteractionsPage from "./pages/InteractionsPage";
 import UploadPage from "./pages/UploadPage";
 import { SSO_CALLBACK_PATH } from "./lib/useGoogle";
 
@@ -162,16 +164,7 @@ export default function App() {
           <Route index element={<Navigate to="/app/timeline" replace />} />
           <Route path="timeline" element={<TimelinePage />} />
           <Route path="review" element={<ReviewPage />} />
-          <Route
-            path="interactions"
-            element={
-              <ComingSoonPage
-                eyebrow="Safety cross-check"
-                title="Flagged findings"
-                description="Drug interactions, duplicate prescriptions and conflicting doses found across every document — each with its sources and a confidence score."
-              />
-            }
-          />
+          <Route path="interactions" element={<InteractionsPage />} />
           <Route
             path="trends"
             element={
@@ -182,16 +175,7 @@ export default function App() {
               />
             }
           />
-          <Route
-            path="chat"
-            element={
-              <ComingSoonPage
-                eyebrow="Follow-up questions"
-                title="Ask CrossCheck"
-                description="Questions answered by reasoning across all of your documents at once, with the sources each answer came from."
-              />
-            }
-          />
+          <Route path="chat" element={<ChatPage />} />
           <Route path="documents" element={<UploadPage />} />
           {/* An unknown tab is a mistyped URL, not a 404 worth a screen. */}
           <Route path="*" element={<Navigate to="/app/timeline" replace />} />

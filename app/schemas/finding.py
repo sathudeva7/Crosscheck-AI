@@ -40,6 +40,16 @@ class FindingRead(BaseModel):
     dismissed_reason: str | None = None
     first_seen_at: datetime
 
+    confidence: float | None = Field(
+        default=None,
+        description=(
+            "How well the finding's underlying facts were read, 0-1: the weakest "
+            "of the extracted rows it rests on. Null when none of them carry a "
+            "score. Not a probability that the finding is real — the rule that "
+            "produced it either matched or it did not."
+        ),
+    )
+
 
 class CheckCoverage(BaseModel):
     """How much of the record the checks could actually see."""
