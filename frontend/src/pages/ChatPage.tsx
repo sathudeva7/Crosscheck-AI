@@ -18,25 +18,59 @@
  *
  *   An ungrounded answer is marked. The verifier flags claims it could not
  *   trace back to a tool result, and those must not look like the rest.
+ *
+ * Conversations are the server's. The browser holds an id, not a transcript —
+ * see the note at the top of lib/qa.ts for why that distinction matters.
  */
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 import { describeError } from "../lib/errors";
-import { BAND, STARTERS, askStreaming, toolLabel } from "../lib/qa";
-import type { Answer, Citation, Turn } from "../lib/qa";
+import {
+  BAND,
+  STARTERS,
+  askStreaming,
+  deleteSession,
+  getTranscript,
+  listSessions,
+  toolLabel,
+} from "../lib/qa";
+import type { Answer, Citation, Message, Session } from "../lib/qa";
 import { useAuth } from "../lib/useAuth";
 
 const MUTED = "rgba(29,31,32,.6)";
 const FAINT = "rgba(29,31,32,.45)";
 
+/**
+ * What renders under an answer bubble.
+ *
+ * Wider than `Answer` because a replayed message carries one thing a fresh one
+ * cannot: `truncated`, meaning the reader left before it finished.
+ */
+type Detail = Omit<Answer, "answer" | "session_id"> & { truncated?: boolean };
+
 interface Entry {
-  id: number;
+  id: string;
   role: "user" | "assistant";
   text: string;
   /** Present on answers only: the apparatus rendered beneath the bubble. */
-  detail?: Answer;
+  detail?: Detail;
 }
+
+/** A stored message, in the shape the transcript renders. */
+function toEntry(message: Message): Entry {
+  return {
+    id: message.id,
+    role: message.role,
+    text: message.content,
+    detail: message.role === "assistant" ? message : undefined,
+  };
+}
+
+/** Ids for messages that exist only on screen — the question just typed. */
+let localId = 0;
+const nextLocalId = () => `local-${(localId += 1)}`;
 
 function initialsOf(name: string): string {
   const parts = name.trim().split(/\s+/).filter(Boolean);
@@ -85,12 +119,27 @@ function Source({ citation }: { citation: Citation }) {
   );
 }
 
-function Apparatus({ detail }: { detail: Answer }) {
+function Apparatus({ detail }: { detail: Detail }) {
   const band = BAND[detail.band] ?? BAND.none;
   const percent = detail.confidence === null ? null : Math.round(detail.confidence * 100);
 
   return (
     <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+      {detail.truncated && (
+        <div
+          style={{
+            fontSize: 12.5,
+            padding: "7px 11px",
+            background: "var(--color-warning-bg)",
+            color: "var(--color-warning-text)",
+            borderLeft: "2px solid var(--color-warning)",
+          }}
+        >
+          This answer was cut off — the page was closed before it finished. Ask again for the
+          whole thing.
+        </div>
+      )}
+
       {detail.citations.length > 0 && (
         <div>
           <div
@@ -232,14 +281,233 @@ function Bubble({ entry, initials }: { entry: Entry; initials: string }) {
   );
 }
 
+/** When a conversation last had a message, in the words someone would use. */
+function ago(iso: string): string {
+  const minutes = Math.round((Date.now() - new Date(iso).getTime()) / 60000);
+  if (minutes < 1) return "just now";
+  if (minutes < 60) return `${minutes}m ago`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours}h ago`;
+  const days = Math.round(hours / 24);
+  return days < 7 ? `${days}d ago` : new Date(iso).toLocaleDateString();
+}
+
+/** A clock, for the control that opens past conversations. */
+function ClockIcon({ size = 16 }: { size?: number }) {
+  return (
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.5"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      style={{ flex: "none" }}
+      aria-hidden
+    >
+      <circle cx="12" cy="12" r="9" />
+      <path d="M12 7v5l3.5 2" />
+    </svg>
+  );
+}
+
+/**
+ * Past conversations, over the transcript rather than beside it.
+ *
+ * A dialog rather than a column because opening an old conversation is
+ * something a reader does occasionally, and a permanent list charges the full
+ * width of the page for it on every visit. Reading the answer is what the
+ * screen is for.
+ */
+function HistoryDialog({
+  sessions,
+  current,
+  onOpen,
+  onDelete,
+  onClose,
+  busy,
+}: {
+  sessions: Session[];
+  current: string | null;
+  onOpen(id: string): void;
+  onDelete(id: string): void;
+  onClose(): void;
+  busy: boolean;
+}) {
+  const panel = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    // Escape closes it, and the panel takes focus so a keyboard reader is
+    // inside the dialog rather than still on the page behind it.
+    const onKey = (event: KeyboardEvent) => {
+      if (event.key === "Escape") onClose();
+    };
+    document.addEventListener("keydown", onKey);
+    panel.current?.focus();
+    return () => document.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  // Rendered into <body> rather than where it sits in the tree. The page
+  // container carries the cc-rise entrance animation, and an ancestor that
+  // animates `transform` becomes the reference box for `position: fixed`
+  // descendants — so `inset: 0` resolved to the chat column and the dialog
+  // landed half off the bottom of it instead of centred in the window.
+  return createPortal(
+    <div
+      className="cc-overlay"
+      // Only a click that both starts and ends on the backdrop closes it —
+      // otherwise a text selection that drifts off the panel dismisses the
+      // dialog mid-drag.
+      onMouseDown={(event) => {
+        if (event.target === event.currentTarget) onClose();
+      }}
+    >
+      <div
+        ref={panel}
+        className="cc-dialog"
+        role="dialog"
+        aria-modal="true"
+        aria-label="Past conversations"
+        tabIndex={-1}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "baseline",
+            justifyContent: "space-between",
+            gap: 12,
+            padding: "14px 16px",
+            borderBottom: "1px solid var(--color-divider)",
+          }}
+        >
+          <div>
+            <h6 style={{ color: "var(--color-accent)", margin: "0 0 2px" }}>History</h6>
+            <strong style={{ fontFamily: "var(--font-heading)", fontSize: 17 }}>
+              Past conversations
+            </strong>
+          </div>
+          <button
+            type="button"
+            onClick={onClose}
+            aria-label="Close"
+            style={{
+              background: "none",
+              border: "none",
+              cursor: "pointer",
+              fontSize: 20,
+              lineHeight: 1,
+              padding: 2,
+              color: MUTED,
+            }}
+          >
+            ×
+          </button>
+        </div>
+
+        <div className="cc-scroll" style={{ overflowY: "auto", minHeight: 0 }}>
+          {sessions.length === 0 ? (
+            <p style={{ fontSize: 13.5, color: MUTED, margin: 0, padding: "22px 16px" }}>
+              Nothing here yet. Conversations are kept as soon as you ask something.
+            </p>
+          ) : (
+            sessions.map((session) => {
+              const active = session.id === current;
+              return (
+                <div
+                  key={session.id}
+                  className="cc-thread"
+                  style={{
+                    display: "flex",
+                    alignItems: "center",
+                    gap: 8,
+                    padding: "11px 16px",
+                    borderBottom: "1px solid var(--color-divider)",
+                    borderLeft: `2px solid ${active ? "var(--color-accent)" : "transparent"}`,
+                    background: active ? "rgba(89,128,166,.09)" : undefined,
+                  }}
+                >
+                  <button
+                    type="button"
+                    onClick={() => onOpen(session.id)}
+                    disabled={busy}
+                    style={{
+                      flex: 1,
+                      minWidth: 0,
+                      textAlign: "left",
+                      background: "none",
+                      border: "none",
+                      padding: 0,
+                      cursor: busy ? "default" : "pointer",
+                      font: "inherit",
+                      color: "inherit",
+                    }}
+                  >
+                    <span
+                      style={{
+                        display: "block",
+                        fontSize: 13.5,
+                        lineHeight: 1.4,
+                        overflow: "hidden",
+                        textOverflow: "ellipsis",
+                        whiteSpace: "nowrap",
+                        fontWeight: active ? 600 : 400,
+                      }}
+                    >
+                      {session.title}
+                    </span>
+                    <span style={{ fontSize: 11.5, color: FAINT }}>
+                      {ago(session.updated_at)}
+                      {active && " · open"}
+                    </span>
+                  </button>
+
+                  <button
+                    type="button"
+                    className="cc-thread-x"
+                    title="Delete this conversation"
+                    aria-label={`Delete conversation: ${session.title}`}
+                    onClick={() => onDelete(session.id)}
+                    disabled={busy}
+                    style={{
+                      flex: "none",
+                      background: "none",
+                      border: "1px solid var(--color-divider)",
+                      padding: "2px 7px",
+                      fontSize: 14,
+                      lineHeight: 1.3,
+                      cursor: "pointer",
+                      color: MUTED,
+                    }}
+                  >
+                    ×
+                  </button>
+                </div>
+              );
+            })
+          )}
+        </div>
+      </div>
+    </div>,
+    document.body,
+  );
+}
+
 export default function ChatPage() {
   const { getToken, state, email } = useAuth();
   const [params, setParams] = useSearchParams();
 
+  /** Which conversation is open. Null until the first question starts one. */
+  const sessionId = params.get("s");
+
+  const [sessions, setSessions] = useState<Session[]>([]);
   const [entries, setEntries] = useState<Entry[]>([]);
   const [draft, setDraft] = useState("");
   const [pending, setPending] = useState(false);
+  const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [showHistory, setShowHistory] = useState(false);
 
   /** The answer as it arrives, before the verifier has scored it. */
   const [partial, setPartial] = useState("");
@@ -247,7 +515,11 @@ export default function ChatPage() {
   const [step, setStep] = useState<string[]>([]);
 
   const bottom = useRef<HTMLDivElement>(null);
-  const nextId = useRef(0);
+  // The conversation a reply belongs to, readable from inside `send` without
+  // making it depend on the URL — a new conversation learns its id mid-stream,
+  // and re-creating `send` at that moment would strand the request in flight.
+  const active = useRef<string | null>(sessionId);
+  active.current = sessionId;
 
   const name = (state.status === "ready" ? state.patient.full_name : null) ?? email ?? "";
   const initials = initialsOf(name);
@@ -256,21 +528,66 @@ export default function ChatPage() {
     bottom.current?.scrollIntoView({ behavior: "smooth", block: "end" });
   }, [entries, pending]);
 
+  const refreshList = useCallback(async () => {
+    try {
+      setSessions(await listSessions(await getToken()));
+    } catch {
+      // The list is a convenience. Failing to load it must not take the
+      // conversation itself down with it.
+    }
+  }, [getToken]);
+
+  useEffect(() => {
+    void refreshList();
+  }, [refreshList]);
+
+  // Open whatever the address bar names. Runs on load too, which is what makes
+  // a refresh land back in the same conversation.
+  useEffect(() => {
+    let cancelled = false;
+
+    if (!sessionId) {
+      setEntries([]);
+      return;
+    }
+
+    setLoading(true);
+    setError(null);
+    void (async () => {
+      try {
+        const transcript = await getTranscript(await getToken(), sessionId);
+        if (!cancelled) setEntries(transcript.messages.map(toEntry));
+      } catch (problem) {
+        if (cancelled) return;
+        // A stale link — the conversation was deleted, or belongs to another
+        // account. Drop back to a blank one rather than showing a dead screen.
+        setParams({}, { replace: true });
+        setEntries([]);
+        setError(describeError(problem));
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+    // setParams is stable in react-router 7; listing it would re-fetch on every
+    // query-string change, including the one this effect makes itself.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [sessionId, getToken]);
+
   const send = useCallback(
     async (question: string) => {
       const trimmed = question.trim();
       if (!trimmed || pending) return;
 
-      // Captured before the question is appended: the API wants the turns that
-      // came before it, not including it.
-      const history: Turn[] = entries.map((entry) => ({
-        role: entry.role,
-        content: entry.text,
-      }));
-
+      // Shown immediately with a local id. The server has already stored it by
+      // the time the first event arrives; this is only so the reader sees what
+      // they typed without waiting for a round trip.
       setEntries((current) => [
         ...current,
-        { id: nextId.current++, role: "user", text: trimmed },
+        { id: nextLocalId(), role: "user", text: trimmed },
       ]);
       setDraft("");
       setError(null);
@@ -279,17 +596,26 @@ export default function ChatPage() {
       setStep([]);
 
       try {
-        const answer = await askStreaming(await getToken(), trimmed, history, {
+        const answer = await askStreaming(await getToken(), trimmed, active.current, {
+          // Arrives before any answer text. Putting the id in the address bar
+          // now means a reader who navigates away mid-answer can still get
+          // back to it — the answer is being saved either way.
+          onSession: ({ id }) => {
+            if (active.current === id) return;
+            active.current = id;
+            setParams({ s: id }, { replace: true });
+          },
           onStep: setStep,
           onToken: (text) => setPartial((current) => current + text),
-          // The verifier sent that draft back. Throwing away what was shown is
-          // the point of the event — keeping it would run two answers together.
           onRestart: () => setPartial(""),
         });
         setEntries((current) => [
           ...current,
-          { id: nextId.current++, role: "assistant", text: answer.answer, detail: answer },
+          { id: nextLocalId(), role: "assistant", text: answer.answer, detail: answer },
         ]);
+        // Titles and ordering come from the server, so the list is re-read
+        // rather than guessed at.
+        void refreshList();
       } catch (problem) {
         setError(describeError(problem));
       } finally {
@@ -298,7 +624,43 @@ export default function ChatPage() {
         setStep([]);
       }
     },
-    [entries, getToken, pending],
+    [getToken, pending, refreshList, setParams],
+  );
+
+  const startNew = useCallback(() => {
+    if (pending) return;
+    active.current = null;
+    setEntries([]);
+    setError(null);
+    setParams({}, { replace: false });
+  }, [pending, setParams]);
+
+  const open = useCallback(
+    (id: string) => {
+      if (pending || id === sessionId) return;
+      setError(null);
+      setParams({ s: id });
+    },
+    [pending, sessionId, setParams],
+  );
+
+  const remove = useCallback(
+    async (id: string) => {
+      if (pending) return;
+      // Optimistic: the row goes at once and comes back if the delete fails.
+      // Waiting on a round trip to remove something the user just dismissed is
+      // the kind of lag that makes a list feel broken.
+      const previous = sessions;
+      setSessions((current) => current.filter((session) => session.id !== id));
+      if (id === sessionId) startNew();
+      try {
+        await deleteSession(await getToken(), id);
+      } catch (problem) {
+        setSessions(previous);
+        setError(describeError(problem));
+      }
+    },
+    [getToken, pending, sessionId, sessions, startNew],
   );
 
   // Arriving from a finding's 'Ask CrossCheck about this' link. The parameter is
@@ -306,37 +668,95 @@ export default function ChatPage() {
   useEffect(() => {
     const question = params.get("q");
     if (!question) return;
-    setParams({}, { replace: true });
+    setParams(sessionId ? { s: sessionId } : {}, { replace: true });
     void send(question);
     // send changes on every message; running this once per ?q= is the intent.
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [params]);
 
   return (
-    <div
-      className="cc-rise"
-      style={{ display: "flex", flexDirection: "column", height: "calc(100vh - 150px)" }}
-    >
-      <div style={{ flex: "none", marginBottom: 14 }}>
-        <h6 style={{ color: "var(--color-accent)", marginBottom: 4 }}>
-          Reasoning across every document
-        </h6>
-        <h2 style={{ margin: 0, fontSize: 30 }}>Ask CrossCheck</h2>
+    <div className="cc-rise cc-chat">
+      {showHistory && (
+        <HistoryDialog
+          sessions={sessions}
+          current={sessionId}
+          onOpen={(id) => {
+            open(id);
+            setShowHistory(false);
+          }}
+          onDelete={(id) => void remove(id)}
+          onClose={() => setShowHistory(false)}
+          busy={pending}
+        />
+      )}
+
+      <div
+        style={{
+          flex: "none",
+          marginBottom: 14,
+          display: "flex",
+          alignItems: "flex-end",
+          justifyContent: "space-between",
+          gap: 16,
+          flexWrap: "wrap",
+        }}
+      >
+        <div>
+          <h6 style={{ color: "var(--color-accent)", marginBottom: 4 }}>
+            Reasoning across every document
+          </h6>
+          <h2 style={{ margin: 0, fontSize: 30 }}>Ask CrossCheck</h2>
+        </div>
+
+        <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ fontSize: 13, padding: "8px 12px", display: "flex", gap: 7 }}
+            onClick={() => setShowHistory(true)}
+            // The count is the reason to open it. Naming it here saves a
+            // click that would only have revealed an empty list.
+            title={
+              sessions.length === 0
+                ? "No past conversations yet"
+                : `${sessions.length} past conversation${sessions.length === 1 ? "" : "s"}`
+            }
+          >
+            <ClockIcon />
+            History
+            {sessions.length > 0 && (
+              <span style={{ color: FAINT, fontFamily: "var(--font-body)", fontWeight: 400 }}>
+                {sessions.length}
+              </span>
+            )}
+          </button>
+
+          <button
+            type="button"
+            className="btn btn-secondary"
+            style={{ fontSize: 13, padding: "8px 12px" }}
+            onClick={startNew}
+            disabled={pending || (!sessionId && entries.length === 0)}
+          >
+            + New
+          </button>
+        </div>
       </div>
 
       <div
-        className="cc-scroll"
         style={{
           flex: 1,
-          overflowY: "auto",
-          overflowX: "hidden",
           display: "flex",
           flexDirection: "column",
           gap: 16,
           padding: "4px 4px 8px",
         }}
       >
-        {entries.length === 0 && !pending && (
+        {loading && (
+          <p style={{ color: FAINT, fontSize: 13.5 }}>Opening that conversation…</p>
+        )}
+
+        {!loading && entries.length === 0 && !pending && (
           <p style={{ color: MUTED, maxWidth: "62ch", fontSize: 14 }}>
             Questions are answered by looking things up in your own records — your medicines, lab
             results, allergies and the text of every document. Each answer shows what it was built
@@ -428,11 +848,13 @@ export default function ChatPage() {
           </div>
         )}
 
-        <div ref={bottom} />
+        {/* The scroll target. Its margin clears the sticky composer, or
+            scrolling to the newest message parks it underneath. */}
+        <div ref={bottom} style={{ scrollMarginBottom: 120 }} />
       </div>
 
-      <div style={{ flex: "none", paddingTop: 12 }}>
-        {entries.length === 0 && (
+      <div className="cc-composer">
+        {entries.length === 0 && !loading && (
           <div style={{ display: "flex", flexWrap: "wrap", gap: 8, marginBottom: 12 }}>
             {STARTERS.map((question) => (
               <button

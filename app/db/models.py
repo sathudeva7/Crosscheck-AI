@@ -16,6 +16,7 @@ from sqlalchemy import (
     Computed,
     Date,
     DateTime,
+    Float,
     ForeignKey,
     Integer,
     Numeric,
@@ -79,6 +80,10 @@ FINDING_TYPES = (
 )
 FINDING_SEVERITIES = ("info", "warning", "danger")
 FINDING_STATUSES = ("active", "dismissed")
+
+# Mirrors the CHECK constraint in migrations/007_qa_session.sql
+QA_ROLES = ("user", "assistant")
+CONFIDENCE_BANDS = ("high", "medium", "low", "none")
 
 
 def _in_list(column: str, values: tuple[str, ...]) -> str:
@@ -588,3 +593,79 @@ class TimelineEvent(Base):
 
     def __repr__(self) -> str:
         return f"<TimelineEvent {self.event_type} {self.display_text!r}>"
+
+
+class QaSession(Base):
+    """One conversation with the assistant.
+
+    Owned by a patient and reached only through them: every read is filtered by
+    `patient_id` rather than trusting a session id from the request, because a
+    session id is a bare UUID in a URL and guessing is not the threat — sharing
+    a link is.
+    """
+
+    __tablename__ = "qa_session"
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    patient_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("patient.id", ondelete="CASCADE"), nullable=False
+    )
+
+    title: Mapped[str] = mapped_column(Text, nullable=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    messages: Mapped[list["QaMessage"]] = relationship(
+        back_populates="session",
+        cascade="all, delete-orphan",
+        order_by="QaMessage.created_at",
+    )
+
+    def __repr__(self) -> str:
+        return f"<QaSession {self.id} {self.title!r}>"
+
+
+class QaMessage(Base):
+    """One message, with everything that qualified it.
+
+    The apparatus fields are null on a user message and mostly populated on an
+    assistant one. `confidence` stays nullable either way: an answer that
+    correctly reports finding nothing rests on no extracted fact, so it has no
+    score, and writing 0 there would read as 'we checked and it is worthless'
+    rather than 'there was nothing to check'.
+    """
+
+    __tablename__ = "qa_message"
+    __table_args__ = (CheckConstraint(_in_list("role", QA_ROLES), name="qa_message_role_check"),)
+
+    id: Mapped[UUID] = mapped_column(PgUUID(as_uuid=True), primary_key=True, default=uuid4)
+    session_id: Mapped[UUID] = mapped_column(
+        PgUUID(as_uuid=True), ForeignKey("qa_session.id", ondelete="CASCADE"), nullable=False
+    )
+
+    role: Mapped[str] = mapped_column(String, nullable=False)
+    content: Mapped[str] = mapped_column(Text, nullable=False)
+
+    confidence: Mapped[float | None] = mapped_column(Float)
+    band: Mapped[str | None] = mapped_column(String)
+    basis: Mapped[str | None] = mapped_column(Text)
+    grounded: Mapped[bool | None] = mapped_column(Boolean)
+    unsupported: Mapped[list[str] | None] = mapped_column(JSONB)
+    citations: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    tool_calls: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
+
+    truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), nullable=False
+    )
+
+    session: Mapped[QaSession] = relationship(back_populates="messages")
+
+    def __repr__(self) -> str:
+        return f"<QaMessage {self.role} {self.content[:40]!r}>"

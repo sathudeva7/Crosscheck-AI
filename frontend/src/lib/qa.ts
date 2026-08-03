@@ -13,10 +13,11 @@
  *   tool result. The answer is still shown — it is usually mostly right — but
  *   it must not look the same as one that checked out.
  *
- * History is client-owned until the qa_session tables exist. It is replayed so
- * follow-ups resolve, never treated as evidence: a fabricated turn cannot put a
- * claim into a new answer, because every fact still has to come back from a
- * tool on the current turn.
+ * Conversations live on the server. The client sends a `session_id` and nothing
+ * else about the past — it used to send the earlier turns themselves, which
+ * made the browser the authority on what had been said. Replayed history is
+ * context the model reasons from, so a client able to write it could put a
+ * sentence in the assistant's mouth and have it treated as established.
  */
 
 import { ApiError, BASE_URL, NetworkError, apiFetch } from "./api";
@@ -38,6 +39,8 @@ export interface Citation {
 
 export interface Answer {
   answer: string;
+  /** Which conversation it landed in — the id of a new one, if none was named. */
+  session_id: string;
   /** The weakest supporting fact, 0–1. Null when the answer rests on none. */
   confidence: number | null;
   band: Band;
@@ -52,23 +55,78 @@ export interface Answer {
   disclaimer: string;
 }
 
-export interface Turn {
-  role: "user" | "assistant";
-  content: string;
+/** One conversation, as it appears in the list. */
+export interface Session {
+  id: string;
+  title: string;
+  created_at: string;
+  /** Last message time. What the list is ordered by. */
+  updated_at: string;
 }
 
-/** The API caps this at 20; trimming here keeps the request from being rejected. */
-export const MAX_HISTORY = 20;
+/**
+ * One stored message.
+ *
+ * The apparatus fields are filled on an answer and defaulted on a question, so
+ * `role` is the only branch a caller needs — nothing has to be null-checked
+ * before it can be rendered.
+ */
+export interface Message {
+  id: string;
+  role: "user" | "assistant";
+  content: string;
+  created_at: string;
+  confidence: number | null;
+  band: Band;
+  basis: string | null;
+  citations: Citation[];
+  grounded: boolean;
+  unsupported: string[] | null;
+  tool_calls: string[];
+  /** The reader left before this answer finished. It is deliberately partial. */
+  truncated: boolean;
+  /** Sent by the server rather than written here — it is safety wording. */
+  disclaimer: string;
+}
+
+export interface Transcript {
+  session: Session;
+  messages: Message[];
+}
+
+export function listSessions(token: string | null): Promise<Session[]> {
+  return apiFetch<Session[]>("/qa/sessions", { token });
+}
+
+export function getTranscript(token: string | null, sessionId: string): Promise<Transcript> {
+  return apiFetch<Transcript>(`/qa/sessions/${sessionId}`, { token });
+}
+
+export function renameSession(
+  token: string | null,
+  sessionId: string,
+  title: string,
+): Promise<Session> {
+  return apiFetch<Session>(`/qa/sessions/${sessionId}`, {
+    token,
+    method: "PATCH",
+    json: { title },
+  });
+}
+
+export function deleteSession(token: string | null, sessionId: string): Promise<void> {
+  return apiFetch<void>(`/qa/sessions/${sessionId}`, { token, method: "DELETE" });
+}
 
 export async function ask(
   token: string | null,
   question: string,
-  history: Turn[],
+  sessionId: string | null,
 ): Promise<Answer> {
   return apiFetch<Answer>("/qa/ask", {
     token,
     method: "POST",
-    json: { question, history: history.slice(-MAX_HISTORY) },
+    json: { question, session_id: sessionId },
   });
 }
 
@@ -79,9 +137,19 @@ export interface StreamWatcher {
   /** A fragment of the answer. Append it. */
   onToken?(text: string): void;
   /**
-   * The verifier rejected that draft and the agent went back for more.
-   * Everything shown so far must be discarded, or the reader ends up with two
-   * answers run together.
+   * Which conversation this landed in. Arrives before any answer text, so a
+   * question that started a new conversation can put its id in the address bar
+   * straight away — a reader who navigates away mid-answer still has somewhere
+   * to come back to.
+   */
+  onSession?(session: { id: string; title: string }): void;
+  /**
+   * Discard everything shown so far and start the answer again.
+   *
+   * The server no longer emits this: it composes once and labels the result
+   * rather than rewriting it. Kept because the cost is three lines and the
+   * failure it prevents is ugly — a server still running the old retry loop
+   * would otherwise concatenate two answers on screen.
    */
   onRestart?(): void;
 }
@@ -99,7 +167,7 @@ export interface StreamWatcher {
 export async function askStreaming(
   token: string | null,
   question: string,
-  history: Turn[],
+  sessionId: string | null,
   watcher: StreamWatcher = {},
 ): Promise<Answer> {
   let response: Response;
@@ -110,7 +178,7 @@ export async function askStreaming(
         "Content-Type": "application/json",
         ...(token ? { Authorization: `Bearer ${token}` } : {}),
       },
-      body: JSON.stringify({ question, history: history.slice(-MAX_HISTORY) }),
+      body: JSON.stringify({ question, session_id: sessionId }),
     });
   } catch {
     throw new NetworkError();
@@ -152,6 +220,9 @@ export async function askStreaming(
 
         const event = JSON.parse(line.slice(6));
         switch (event.type) {
+          case "session":
+            watcher.onSession?.({ id: event.id, title: event.title });
+            break;
           case "step":
             watcher.onStep?.(event.tools ?? []);
             break;

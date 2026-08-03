@@ -15,6 +15,7 @@ from sqlalchemy.orm import Session
 
 from app.checks.base import Candidate
 from app.db.models import TimelineEvent
+from app.labs import canonical
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +54,13 @@ def _numeric(events: list[TimelineEvent]) -> list[TimelineEvent]:
 
 def check_lab_trends(db: Session, events: list[TimelineEvent]) -> list[Candidate]:
     """A measurement drifting the wrong way over three or more readings."""
+    # Grouped by the same rule the Lab Trends page uses, so a trend the reader
+    # can see on a chart is a trend this check can raise. Lowercasing alone
+    # split 'BP' from 'Blood Pressure' into two short histories, and a series
+    # cut in half never reaches the three readings a direction needs.
     by_analyte: dict[str, list[TimelineEvent]] = defaultdict(list)
     for event in _numeric(events):
-        by_analyte[event.analyte.strip().lower()].append(event)
+        by_analyte[canonical(event.analyte)].append(event)
 
     found: list[Candidate] = []
 

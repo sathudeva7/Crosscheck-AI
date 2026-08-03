@@ -358,3 +358,71 @@ textarea.input { min-height: 90px; resize: vertical; }
    active state changes four properties at once; !important is what lets this
    hover win against that. */
 .cc-nav:hover { background: rgba(89, 128, 166, 0.08) !important; }
+
+/* --- chat -------------------------------------------------------------------
+
+   One column. Past conversations open over the transcript rather than sitting
+   beside it, so the full width belongs to the thing being read.
+
+   The transcript deliberately does NOT scroll inside itself. A fixed-height box
+   with its own overflow puts a second scrollbar partway across the window and
+   makes the page look like an embedded frame; every other screen scrolls as one
+   surface, and this one now does too. The composer stays reachable by sticking
+   to the bottom of the viewport instead. */
+
+.cc-chat {
+  display: flex;
+  flex-direction: column;
+  /* Enough that the composer starts near the bottom of the window rather than
+     hanging under the heading on an empty conversation. */
+  min-height: calc(100vh - 210px);
+}
+
+.cc-composer {
+  position: sticky;
+  bottom: 0;
+  padding: 12px 0 4px;
+  /* Opaque, or the transcript reads through the input as it scrolls under. */
+  background: var(--color-bg);
+  border-top: 1px solid var(--color-divider);
+}
+
+/* The history dialog. Square, hairline, and dimmed rather than blurred --
+   the page behind stays legible, which is what tells you it is still there. */
+.cc-overlay {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: grid;
+  place-items: center;
+  padding: 24px;
+  background: rgba(29, 31, 32, 0.34);
+  animation: cc-fade 0.16s ease both;
+}
+
+.cc-dialog {
+  display: flex;
+  flex-direction: column;
+  width: 100%;
+  max-width: 470px;
+  max-height: min(64vh, 520px);
+  background: var(--color-bg);
+  border: 1px solid var(--color-text);
+  box-shadow: 0 18px 44px rgba(29, 31, 32, 0.17);
+  animation: cc-rise 0.2s ease both;
+}
+
+.cc-dialog:focus { outline: none; }
+
+@keyframes cc-fade { from { opacity: 0; } to { opacity: 1; } }
+
+@media (prefers-reduced-motion: reduce) {
+  .cc-overlay, .cc-dialog, .cc-rise { animation: none; }
+}
+
+/* One conversation in the list. The delete control is revealed on hover and on
+   keyboard focus -- focus-within, or it would be unreachable by tab. */
+.cc-thread .cc-thread-x { opacity: 0; }
+.cc-thread:hover .cc-thread-x,
+.cc-thread:focus-within .cc-thread-x { opacity: 1; }
+.cc-thread:hover { background: rgba(89, 128, 166, 0.07); }

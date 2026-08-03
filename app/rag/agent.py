@@ -6,18 +6,28 @@ exists alongside the older `graph.py`: a graph compiled once at import can only
 ever hold one patient's tools, and the first patient to load it would answer
 everyone's questions.
 
-Four nodes:
+Four nodes, in one direction:
 
     agent ⇄ tools  →  compose  →  verify
-      ▲                              │
-      └──────── not grounded ────────┘
 
 `agent` decides what to look up. `tools` runs the lookups and, on the way past,
-records what was touched. `compose` writes the sentence. `verify` checks the
-sentence against what the tools actually returned, and only then is a
+records what was touched. `compose` writes the sentence, once. `verify` checks
+the sentence against what the tools actually returned, and only then is a
 confidence attached.
 
-The retry loop grades the *answer*, not each retrieved row. Grading rows made
+Verification labels the answer; it does not gate it. It used to send a failed
+draft back to be rewritten, up to twice, and that was wrong in two ways. It was
+slow — three drafts of 'is ibuprofen safe for me' took seventy-five seconds
+where one takes seven — and because the answer is streamed as it is written, a
+reader watched a finished answer sit on screen and then be silently replaced by
+a different one. Worse, the rewriting was invisible: an answer that failed the
+check twice went out looking exactly like one that passed.
+
+So an ungrounded answer now ships with `grounded` false and its unsupported
+claims named, and the screen says so. Reporting the doubt beats laundering it,
+which is the same rule the rest of CrossCheck follows.
+
+What grades here is the *answer*, not each retrieved row. Grading rows made
 sense for the blog-post retriever this replaced; it makes none here, because
 `find_medications` returns rows that are relevant by construction. The failure
 worth catching is one level up — an answer that sounds settled on thin
@@ -59,11 +69,6 @@ logger = logging.getLogger(__name__)
 # has. Six is generous — the longest sensible chain is orientation, a lookup, a
 # follow-up read and a safety check.
 MAX_TOOL_ROUNDS = 6
-
-# How many times a failed grounding check may send the agent back. Two, and
-# then the answer goes out with its gaps named rather than looping until the
-# request times out.
-MAX_RETRIES = 2
 
 # Evidence is shown to the verifier under short handles rather than UUIDs. A
 # model asked to repeat a UUID will eventually mistype one; asked to repeat
@@ -198,7 +203,6 @@ class AgentState(TypedDict, total=False):
     evidence: Annotated[list[dict[str, Any]], operator.add]
     question: str
     rounds: int
-    retries: int
     answer: str
     verdict: dict[str, Any]
 
@@ -451,7 +455,12 @@ def build_agent(db: Session, patient_id: UUID):
         return {"answer": reply.content if isinstance(reply.content, str) else str(reply.content)}
 
     async def verify(state: AgentState) -> dict[str, Any]:
-        """Check the draft against the evidence, and score it."""
+        """Label the draft against the evidence, and score it.
+
+        The last node. Nothing downstream acts on the verdict — it travels out
+        with the answer so the reader sees the doubt, rather than being used to
+        quietly rewrite until the doubt goes away.
+        """
         evidence = state.get("evidence", [])
         try:
             verdict = await verifying_model.with_structured_output(Verdict).ainvoke(
@@ -467,6 +476,14 @@ def build_agent(db: Session, patient_id: UUID):
             # only from tool results — but with no confidence attached.
             logger.warning("verification failed, answering unscored: %s", problem)
             verdict = Verdict(grounded=True, supported_by=[])
+
+        if not verdict.grounded:
+            # The only place this is ever noticed now that it does not reroute.
+            # Worth a line in the log: a question that reliably comes back
+            # ungrounded is a gap in the tools, not a bad draft.
+            logger.info(
+                "ungrounded answer for %r: %s", state.get("question", ""), verdict.missing
+            )
 
         return {"verdict": {**verdict.model_dump(), **score(evidence, verdict.supported_by)}}
 
@@ -500,37 +517,12 @@ def build_agent(db: Session, patient_id: UUID):
             return "compose"
         return "tools" if state.get("rounds", 0) < MAX_TOOL_ROUNDS else "stop"
 
-    def after_verify(state: AgentState) -> Literal["agent", "__end__"]:
-        verdict = state.get("verdict", {})
-        if verdict.get("grounded", True) or state.get("retries", 0) >= MAX_RETRIES:
-            return END
-        return "agent"
-
-    async def retry(state: AgentState) -> dict[str, Any]:
-        """Send the agent back with what the verifier found wanting."""
-        verdict = state.get("verdict", {})
-        note = verdict.get("missing") or "the answer was not supported by the tool results"
-        return {
-            "messages": [
-                HumanMessage(
-                    f"That draft was not fully grounded: {note}. "
-                    "Look it up with the tools before answering again."
-                )
-            ],
-            "retries": state.get("retries", 0) + 1,
-            # A fresh lookup budget, or the retry is theatre: the first attempt
-            # is usually what spent the rounds, and sending the agent back with
-            # nothing left to spend just produces the same answer again.
-            "rounds": 0,
-        }
-
     graph = StateGraph(AgentState)
     graph.add_node("agent", agent)
     graph.add_node("tools", run_tools)
     graph.add_node("stop", stop_gathering)
     graph.add_node("compose", compose)
     graph.add_node("verify", verify)
-    graph.add_node("retry", retry)
 
     graph.add_edge(START, "agent")
     graph.add_conditional_edges(
@@ -539,8 +531,9 @@ def build_agent(db: Session, patient_id: UUID):
     graph.add_edge("tools", "agent")
     graph.add_edge("stop", "compose")
     graph.add_edge("compose", "verify")
-    graph.add_conditional_edges("verify", after_verify, {"agent": "retry", END: END})
-    graph.add_edge("retry", "agent")
+    # No edge out of verify. Composing happens once, so what was streamed to the
+    # reader is what the answer is — see the note at the top of this module.
+    graph.add_edge("verify", END)
 
     return graph.compile()
 
@@ -555,11 +548,10 @@ DISCLAIMER = (
     "Check anything that matters with your doctor or pharmacist."
 )
 
-# Each gathering round is two steps (decide, then run), and each attempt adds
-# compose, verify and possibly retry. LangGraph's default of 25 is below what
-# the budgets above already permit, so it would abort a legitimate long answer
-# rather than cap anything.
-LIMITS = {"recursion_limit": (MAX_RETRIES + 1) * (MAX_TOOL_ROUNDS * 2 + 4) + 5}
+# Each gathering round is two steps (decide, then run), then compose and verify.
+# LangGraph's default of 25 is below what the round budget above already
+# permits, so it would abort a legitimate long answer rather than cap anything.
+LIMITS = {"recursion_limit": MAX_TOOL_ROUNDS * 2 + 4 + 5}
 
 
 def _start(question: str, history: list[AnyMessage] | None) -> dict[str, Any]:
@@ -568,7 +560,6 @@ def _start(question: str, history: list[AnyMessage] | None) -> dict[str, Any]:
         "question": question,
         "evidence": [],
         "rounds": 0,
-        "retries": 0,
     }
 
 
@@ -621,20 +612,22 @@ async def astream_answer(
 ) -> AsyncIterator[dict[str, Any]]:
     """The same answer, delivered as it is produced.
 
-    A full answer takes twenty to forty seconds, most of it spent looking things
-    up before a single word is written. Waiting that long in front of a blank
-    screen reads as broken, so the work is narrated instead: which tools are
-    running, then the answer as it is composed, then the confidence and the
-    citations once the verifier has had its say.
+    Most of the wait is spent looking things up before a single word is written.
+    Waiting that long in front of a blank screen reads as broken, so the work is
+    narrated instead: which tools are running, then the answer as it is
+    composed, then the confidence and the citations once the verifier has had
+    its say.
 
-    Four kinds of event:
+    Three kinds of event:
 
-      `step`    — a lookup began, with the tool names.
-      `token`   — a fragment of the answer being written.
-      `restart` — the verifier rejected that draft and the agent went back for
-                  more. Everything streamed so far must be thrown away, or the
-                  reader ends up with two answers concatenated.
-      `done`    — the finished object, identical to what `ask` returns.
+      `step`  — a lookup began, with the tool names.
+      `token` — a fragment of the answer being written.
+      `done`  — the finished object, identical to what `ask` returns.
+
+    Nothing streamed is ever retracted: composing happens once, so the tokens a
+    reader watched arrive are the answer `done` carries. That is the whole
+    reason verification stopped rerouting — see the note at the top of this
+    module.
 
     Confidence cannot be streamed early and must not be guessed at: it is only
     known once composing has finished and the verifier has named which facts the
@@ -670,9 +663,6 @@ async def astream_answer(
                 if names:
                     tools.extend(names)
                     yield {"type": "step", "tools": names}
-            elif node == "retry":
-                answer = ""
-                yield {"type": "restart"}
             elif node == "compose":
                 answer = update.get("answer", "") or ""
             elif node == "verify":

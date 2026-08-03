@@ -24,7 +24,6 @@ import { useAuth } from "./lib/useAuth";
 import { ReviewCountProvider } from "./lib/useReviewCount";
 import { landingRoute } from "./lib/auth";
 import AppShell from "./components/AppShell";
-import ComingSoonPage from "./pages/ComingSoonPage";
 import LoginPage from "./pages/LoginPage";
 import ProcessingPage from "./pages/ProcessingPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -32,6 +31,7 @@ import ReviewPage from "./pages/ReviewPage";
 import SetupPage from "./pages/SetupPage";
 import SsoCallbackPage from "./pages/SsoCallbackPage";
 import TimelinePage from "./pages/TimelinePage";
+import TrendsPage from "./pages/TrendsPage";
 import ChatPage from "./pages/ChatPage";
 import InteractionsPage from "./pages/InteractionsPage";
 import UploadPage from "./pages/UploadPage";
@@ -165,16 +165,7 @@ export default function App() {
           <Route path="timeline" element={<TimelinePage />} />
           <Route path="review" element={<ReviewPage />} />
           <Route path="interactions" element={<InteractionsPage />} />
-          <Route
-            path="trends"
-            element={
-              <ComingSoonPage
-                eyebrow="Results over time"
-                title="Lab trends"
-                description="Each measurement plotted across every report that contains it, with the direction of travel explained in plain language."
-              />
-            }
-          />
+          <Route path="trends" element={<TrendsPage />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="documents" element={<UploadPage />} />
           {/* An unknown tab is a mistyped URL, not a 404 worth a screen. */}
