@@ -19,6 +19,7 @@
  */
 
 import { useCallback, useEffect, useState } from "react";
+import { createPortal } from "react-dom";
 import { useNavigate } from "react-router-dom";
 import { Corners } from "../components/chrome";
 import { useAuth } from "../lib/useAuth";
@@ -29,6 +30,7 @@ import {
   formatDocDate,
   isSettled,
   listDocuments,
+  openDocument,
   statusLabel,
 } from "../lib/documents";
 import type { DocumentRead } from "../lib/documents";
@@ -70,6 +72,7 @@ function FileRow({
   tone = "normal",
   busy,
   onRemove,
+  onOpen,
 }: {
   title: string;
   subtitle: string;
@@ -78,10 +81,27 @@ function FileRow({
   tone?: "normal" | "danger" | "pending";
   busy?: boolean;
   onRemove?: () => void;
+  /** Set on stored documents: the row opens the original. */
+  onOpen?: () => void;
 }) {
   const danger = tone === "danger";
   return (
     <div
+      // A row that does something has to say so before it is clicked. Given a
+      // button role and a key handler rather than wrapped in a <button>, which
+      // cannot legally contain the remove button already inside it.
+      role={onOpen ? "button" : undefined}
+      tabIndex={onOpen ? 0 : undefined}
+      onClick={onOpen}
+      onKeyDown={
+        onOpen &&
+        ((event) => {
+          if (event.key === "Enter" || event.key === " ") {
+            event.preventDefault();
+            onOpen();
+          }
+        })
+      }
       style={{
         display: "flex",
         alignItems: "center",
@@ -92,6 +112,7 @@ function FileRow({
         // Not yet read: dimmed, so a finished document is visibly the settled
         // state rather than just a longer line of text.
         opacity: tone === "pending" ? 0.72 : 1,
+        cursor: onOpen ? "pointer" : undefined,
       }}
     >
       {busy ? (
@@ -164,8 +185,175 @@ function FileRow({
   );
 }
 
+/**
+ * The original, as it was uploaded.
+ *
+ * Portalled to the body. `.cc-rise` on the page animates `transform`, and a
+ * transformed ancestor becomes the containing block for `position: fixed`
+ * descendants — so a fixed overlay rendered in place lands inside the column
+ * rather than over the screen. Learned once, on the chat history dialog.
+ */
+function Viewer({ document: doc, onClose }: { document: DocumentRead; onClose: () => void }) {
+  const { getToken } = useAuth();
+  const [src, setSrc] = useState<string | null>(null);
+  const [gone, setGone] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    let release = () => {};
+
+    void (async () => {
+      try {
+        const opened = await openDocument(await getToken(), doc.id);
+        if (cancelled) {
+          // Resolved after the dialog closed. Release it here or the object URL
+          // holds the file in memory for the life of the tab.
+          opened.release();
+          return;
+        }
+        release = opened.release;
+        setSrc(opened.src);
+        setGone(!opened.file.available);
+      } catch (problem) {
+        if (!cancelled) setError(describeError(problem));
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+      release();
+    };
+  }, [doc.id, getToken]);
+
+  useEffect(() => {
+    const onKey = (event: KeyboardEvent) => event.key === "Escape" && onClose();
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [onClose]);
+
+  const isPdf = doc.mime_type === "application/pdf";
+
+  return createPortal(
+    <div
+      role="dialog"
+      aria-modal="true"
+      aria-label={doc.filename ?? "Document"}
+      onClick={onClose}
+      style={{
+        position: "fixed",
+        inset: 0,
+        background: "rgba(20,21,22,.62)",
+        display: "grid",
+        placeItems: "center",
+        padding: 24,
+        zIndex: 100,
+      }}
+    >
+      <div
+        className="card blueprint"
+        onClick={(event) => event.stopPropagation()}
+        style={{
+          width: "min(920px, 100%)",
+          maxHeight: "calc(100vh - 48px)",
+          display: "flex",
+          flexDirection: "column",
+          padding: 0,
+          gap: 0,
+        }}
+      >
+        <div
+          style={{
+            display: "flex",
+            alignItems: "center",
+            gap: 12,
+            padding: "14px 18px",
+            borderBottom: "1px solid var(--color-divider)",
+          }}
+        >
+          <div style={{ flex: 1, minWidth: 0 }}>
+            <div
+              style={{
+                fontFamily: "var(--font-heading)",
+                fontSize: 16,
+                whiteSpace: "nowrap",
+                overflow: "hidden",
+                textOverflow: "ellipsis",
+              }}
+            >
+              {doc.filename || "Untitled document"}
+            </div>
+            <div style={{ fontSize: 12, color: MUTED }}>
+              {[docTypeLabel(doc.doc_type), formatDocDate(doc.doc_date), doc.provider]
+                .filter(Boolean)
+                .join(" · ")}
+            </div>
+          </div>
+          {src && (
+            <a href={src} target="_blank" rel="noopener noreferrer" className="btn-link">
+              Open in new tab ↗
+            </a>
+          )}
+          <button type="button" className="btn btn-ghost" onClick={onClose}>
+            Close
+          </button>
+        </div>
+
+        <div
+          style={{
+            flex: 1,
+            overflow: "auto",
+            background: "var(--color-surface)",
+            display: "grid",
+            placeItems: "center",
+            minHeight: 220,
+          }}
+        >
+          {error && <p style={{ padding: 28, color: "var(--color-danger-text)" }}>{error}</p>}
+
+          {/* A row whose file did not survive an early redeploy. Said plainly:
+              the reader should know the page is gone, not think we broke. */}
+          {gone && !error && (
+            <div style={{ padding: "36px 28px", textAlign: "center", maxWidth: 460 }}>
+              <p style={{ fontFamily: "var(--font-heading)", fontSize: 17, margin: "0 0 8px" }}>
+                The original is no longer stored
+              </p>
+              <p style={{ fontSize: 13.5, color: MUTED, margin: 0 }}>
+                This document was uploaded before files were kept in permanent storage, so the
+                scan itself is gone. Everything read out of it is still on your timeline.
+              </p>
+            </div>
+          )}
+
+          {!src && !gone && !error && (
+            <p style={{ padding: 40, color: MUTED, fontSize: 13.5 }}>Loading…</p>
+          )}
+
+          {src &&
+            (isPdf ? (
+              // Browsers render PDFs natively. A viewer library would be a
+              // megabyte of JavaScript to do what an iframe already does.
+              <iframe
+                src={src}
+                title={doc.filename ?? "Document"}
+                style={{ width: "100%", height: "calc(100vh - 190px)", border: 0 }}
+              />
+            ) : (
+              <img
+                src={src}
+                alt={doc.filename ?? "Uploaded document"}
+                style={{ maxWidth: "100%", display: "block" }}
+              />
+            ))}
+        </div>
+      </div>
+    </div>,
+    window.document.body,
+  );
+}
+
 /** A stored document, however far through the pipeline it is. */
-function DocumentRow({ document }: { document: DocumentRead }) {
+function DocumentRow({ document, onOpen }: { document: DocumentRead; onOpen: () => void }) {
   const failed = document.status === "failed";
   const settled = isSettled(document);
   const state = statusLabel(document.status);
@@ -188,6 +376,10 @@ function DocumentRow({ document }: { document: DocumentRead }) {
       trailing={document.page_count ? `${document.page_count} pp` : undefined}
       tone={failed ? "danger" : settled ? "normal" : "pending"}
       busy={!settled}
+      // Only once it has been read. A row still being processed has a file, but
+      // opening it mid-pipeline invites the reader to compare a scan against a
+      // timeline that is not finished being written.
+      onOpen={settled ? onOpen : undefined}
     />
   );
 }
@@ -200,6 +392,8 @@ export default function UploadPage() {
   const [dragging, setDragging] = useState(false);
   const [documents, setDocuments] = useState<DocumentRead[] | null>(null);
   const [listError, setListError] = useState<string | null>(null);
+  /** The document whose original is open, if any. */
+  const [viewing, setViewing] = useState<DocumentRead | null>(null);
 
   const { outcomes, busy, start, reset } = useUpload();
 
@@ -257,6 +451,8 @@ export default function UploadPage() {
 
   return (
     <div className="cc-rise">
+      {viewing && <Viewer document={viewing} onClose={() => setViewing(null)} />}
+
       <div style={{ maxWidth: 760 }}>
         <h6 style={{ color: "var(--color-accent)", marginBottom: 4 }}>Sources</h6>
         <h2 style={{ margin: "0 0 6px", fontSize: 30 }}>Documents</h2>
@@ -465,7 +661,7 @@ export default function UploadPage() {
             </div>
             <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
               {documents!.map((doc) => (
-                <DocumentRow key={doc.id} document={doc} />
+                <DocumentRow key={doc.id} document={doc} onOpen={() => setViewing(doc)} />
               ))}
             </div>
           </>

@@ -657,6 +657,11 @@ class QaMessage(Base):
     grounded: Mapped[bool | None] = mapped_column(Boolean)
     unsupported: Mapped[list[str] | None] = mapped_column(JSONB)
     citations: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
+    # Published pages behind an attributed general-medicine sentence. Kept in
+    # its own column rather than mixed into citations: a citation is a fact off
+    # this patient's document and carries a confidence, and a stored transcript
+    # has to keep that distinction as clearly as the screen does.
+    web: Mapped[list[dict[str, Any]]] = mapped_column(JSONB, nullable=False, default=list)
     tool_calls: Mapped[list[str]] = mapped_column(JSONB, nullable=False, default=list)
 
     truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)

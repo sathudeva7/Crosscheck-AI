@@ -36,7 +36,7 @@ import {
   listSessions,
   toolLabel,
 } from "../lib/qa";
-import type { Answer, Citation, Message, Session } from "../lib/qa";
+import type { Answer, Citation, Message, Session, WebSource } from "../lib/qa";
 import { useAuth } from "../lib/useAuth";
 
 const MUTED = "rgba(29,31,32,.6)";
@@ -119,6 +119,59 @@ function Source({ citation }: { citation: Citation }) {
   );
 }
 
+/**
+ * A published page an attributed sentence rests on.
+ *
+ * Rendered apart from the citation chips, and looking unlike them, on purpose.
+ * A citation is a fact off this patient's own prescription and carries the
+ * confidence that reading earned; this is a drug reference that has never seen
+ * them. Both appearing as identical grey chips under one heading would be the
+ * single most misleading thing this screen could do — the reader would have no
+ * way to tell which sentences were about them.
+ */
+function WebLink({ source }: { source: WebSource }) {
+  // 'drugs.com' tells a reader more about whether to trust it than the article
+  // title does, and it is what they would look at in a browser bar.
+  const host = (() => {
+    try {
+      return new URL(source.url).hostname.replace(/^www\./, "");
+    } catch {
+      return source.url;
+    }
+  })();
+
+  return (
+    <a
+      href={source.url}
+      target="_blank"
+      rel="noopener noreferrer"
+      title={source.title ?? source.url}
+      style={{
+        display: "inline-flex",
+        flexDirection: "column",
+        padding: "5px 10px",
+        border: "1px dashed var(--color-divider)",
+        background: "transparent",
+        maxWidth: 300,
+        textDecoration: "none",
+        color: "inherit",
+      }}
+    >
+      <span
+        style={{
+          fontSize: 12.5,
+          whiteSpace: "nowrap",
+          overflow: "hidden",
+          textOverflow: "ellipsis",
+        }}
+      >
+        {source.title || host}
+      </span>
+      <span style={{ fontSize: 11, color: FAINT }}>{host} ↗</span>
+    </a>
+  );
+}
+
 function Apparatus({ detail }: { detail: Detail }) {
   const band = BAND[detail.band] ?? BAND.none;
   const percent = detail.confidence === null ? null : Math.round(detail.confidence * 100);
@@ -156,6 +209,27 @@ function Apparatus({ detail }: { detail: Detail }) {
           <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
             {detail.citations.map((citation, index) => (
               <Source key={`${citation.event_id ?? citation.document_id ?? index}`} citation={citation} />
+            ))}
+          </div>
+        </div>
+      )}
+
+      {detail.web?.length > 0 && (
+        <div>
+          <div
+            style={{
+              fontSize: 10.5,
+              textTransform: "uppercase",
+              letterSpacing: ".07em",
+              color: FAINT,
+              marginBottom: 5,
+            }}
+          >
+            General background from the web · not your records
+          </div>
+          <div style={{ display: "flex", flexWrap: "wrap", gap: 6 }}>
+            {detail.web.map((source) => (
+              <WebLink key={source.url} source={source} />
             ))}
           </div>
         </div>
@@ -521,6 +595,11 @@ export default function ChatPage() {
   const active = useRef<string | null>(sessionId);
   active.current = sessionId;
 
+  // `pending` again, but readable the instant it is set. The state variable is
+  // captured when `send` is built, so two calls made before React re-renders
+  // both see the old `false` and both go out — one double-click, two answers.
+  const inFlight = useRef(false);
+
   const name = (state.status === "ready" ? state.patient.full_name : null) ?? email ?? "";
   const initials = initialsOf(name);
 
@@ -580,7 +659,8 @@ export default function ChatPage() {
   const send = useCallback(
     async (question: string) => {
       const trimmed = question.trim();
-      if (!trimmed || pending) return;
+      if (!trimmed || inFlight.current) return;
+      inFlight.current = true;
 
       // Shown immediately with a local id. The server has already stored it by
       // the time the first event arrives; this is only so the reader sees what
@@ -619,12 +699,13 @@ export default function ChatPage() {
       } catch (problem) {
         setError(describeError(problem));
       } finally {
+        inFlight.current = false;
         setPending(false);
         setPartial("");
         setStep([]);
       }
     },
-    [getToken, pending, refreshList, setParams],
+    [getToken, refreshList, setParams],
   );
 
   const startNew = useCallback(() => {
@@ -663,11 +744,19 @@ export default function ChatPage() {
     [getToken, pending, sessionId, sessions, startNew],
   );
 
-  // Arriving from a finding's 'Ask CrossCheck about this' link. The parameter is
-  // cleared first so a refresh does not silently ask it a second time.
+  // Arriving from a finding's 'Ask CrossCheck about this' link.
+  //
+  // Clearing ?q= is not on its own enough to stop this asking twice. setParams
+  // schedules a re-render; it does not change the `params` this pass is holding.
+  // So anything that runs the body again before that render — StrictMode's
+  // deliberate double-invoke in development, chiefly — reads the same question
+  // and sends it again, opening a second conversation. The guard has to be the
+  // question itself: once asked, never asked again, however often this runs.
+  const asked = useRef<string | null>(null);
   useEffect(() => {
     const question = params.get("q");
-    if (!question) return;
+    if (!question || asked.current === question) return;
+    asked.current = question;
     setParams(sessionId ? { s: sessionId } : {}, { replace: true });
     void send(question);
     // send changes on every message; running this once per ?q= is the intent.

@@ -37,6 +37,19 @@ export interface Citation {
   text: string | null;
 }
 
+/**
+ * One published page behind an attributed general-medicine sentence.
+ *
+ * Deliberately not a `Citation`. A citation is a fact read off the patient's own
+ * document and carries the confidence that reading earned; this is drug-reference
+ * publishing, which says nothing about them and has no such score. They render
+ * under separate headings for the same reason they are separate types here.
+ */
+export interface WebSource {
+  url: string;
+  title: string | null;
+}
+
 export interface Answer {
   answer: string;
   /** Which conversation it landed in — the id of a new one, if none was named. */
@@ -47,6 +60,8 @@ export interface Answer {
   /** Why the score is what it is, in words. */
   basis: string | null;
   citations: Citation[];
+  /** Published pages behind any attributed general-medicine sentence. */
+  web: WebSource[];
   grounded: boolean;
   /** Claims the verifier could not trace to evidence. */
   unsupported: string[] | null;
@@ -80,6 +95,7 @@ export interface Message {
   band: Band;
   basis: string | null;
   citations: Citation[];
+  web: WebSource[];
   grounded: boolean;
   unsupported: string[] | null;
   tool_calls: string[];

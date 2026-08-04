@@ -166,3 +166,49 @@ export async function getDocument(token: string | null, id: string): Promise<Doc
 export async function deleteDocument(token: string | null, id: string): Promise<void> {
   return apiFetch<void>(`/documents/${id}`, { method: "DELETE", token });
 }
+
+/** Where to fetch an original, and whether there still is one. */
+export interface DocumentFile {
+  /**
+   * A signed link, good for a few minutes. Null when the API is storing files
+   * on its own disk, which cannot mint links — read `/raw` instead.
+   */
+  url: string | null;
+  /**
+   * False when the row survives but its file does not. Documents uploaded
+   * before object storage existed lost their originals to a redeploy; what was
+   * read out of them is still on the timeline. A real state, not an error.
+   */
+  available: boolean;
+  filename: string | null;
+  mime_type: string;
+  page_count: number | null;
+}
+
+export function getDocumentFile(token: string | null, id: string): Promise<DocumentFile> {
+  return apiFetch<DocumentFile>(`/documents/${id}/file`, { token });
+}
+
+/**
+ * A `src` the browser can load, and how to release it.
+ *
+ * Two paths, because an `<img>` tag sends no Authorization header. With object
+ * storage the API hands back a signed link the browser can fetch directly and
+ * there is nothing to clean up. On local disk there is no such link, so the
+ * bytes come through the API as a blob and become an object URL — which holds
+ * memory until it is revoked, hence `release`.
+ *
+ * Callers get one shape and do not have to know which backend answered.
+ */
+export async function openDocument(
+  token: string | null,
+  id: string,
+): Promise<{ src: string | null; file: DocumentFile; release: () => void }> {
+  const file = await getDocumentFile(token, id);
+  if (!file.available) return { src: null, file, release: () => {} };
+  if (file.url) return { src: file.url, file, release: () => {} };
+
+  const blob = await apiFetch<Blob>(`/documents/${id}/raw`, { token, parse: "blob" });
+  const src = URL.createObjectURL(blob);
+  return { src, file, release: () => URL.revokeObjectURL(src) };
+}

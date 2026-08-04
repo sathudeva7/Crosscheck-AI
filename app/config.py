@@ -22,6 +22,26 @@ DB_MAX_OVERFLOW = int(os.getenv("DB_MAX_OVERFLOW", 2))
 UPLOAD_DIR = Path(os.getenv("UPLOAD_DIR", PROJECT_ROOT / "uploads"))
 MAX_UPLOAD_MB = int(os.getenv("MAX_UPLOAD_MB", 25))
 
+# --- object storage ----------------------------------------------------------
+#
+# Supabase Storage when these are set, the local disk when they are not. Not a
+# preference: a container filesystem does not survive a redeploy, so on a host
+# the originals are gone by the next deploy while the facts extracted from them
+# stay in Postgres — a timeline citing page 1 of a document nobody can open
+# again. Locally the disk is fine and needs no account, so both are supported
+# and the environment decides.
+#
+# The service key bypasses every access rule in the project. It belongs on the
+# server and must never be given a VITE_ name or reach the browser.
+SUPABASE_URL = (os.getenv("SUPABASE_URL") or "").rstrip("/")
+SUPABASE_SERVICE_KEY = os.getenv("SUPABASE_SERVICE_KEY")
+SUPABASE_BUCKET = os.getenv("SUPABASE_BUCKET", "documents")
+
+# How long a link to a document stays good. Long enough to open and read a
+# scan, short enough that a URL copied out of devtools is useless by the time
+# it is pasted anywhere.
+SIGNED_URL_TTL = int(os.getenv("SIGNED_URL_TTL", 300))
+
 # What pages.py can actually open. Anything else is rejected at upload rather
 # than failing later in the pipeline.
 ALLOWED_MIME_TYPES = {

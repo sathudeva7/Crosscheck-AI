@@ -65,10 +65,19 @@ export interface RequestOptions extends Omit<RequestInit, "body"> {
    * identical either way — the status is the only thing that tells them apart.
    */
   onStatus?: (status: number) => void;
+  /**
+   * How to read the body. JSON unless told otherwise.
+   *
+   * `blob` exists for one case: fetching a document's original bytes when the
+   * API is storing files itself rather than handing back a signed link. An
+   * <img> tag cannot send an Authorization header, so those bytes have to be
+   * fetched like any other authenticated call and turned into an object URL.
+   */
+  parse?: "json" | "blob";
 }
 
 export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const { token, json, form, headers, onStatus, ...rest } = options;
+  const { token, json, form, headers, onStatus, parse = "json", ...rest } = options;
 
   let response: Response;
   try {
@@ -95,5 +104,6 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
 
   if (!response.ok) throw new ApiError(response.status, await readError(response));
   if (response.status === 204) return undefined as T;
+  if (parse === "blob") return (await response.blob()) as T;
   return (await response.json()) as T;
 }

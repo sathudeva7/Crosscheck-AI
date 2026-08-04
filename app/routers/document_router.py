@@ -31,7 +31,7 @@ from app.db.models import Document, Patient
 from app.db.session import get_db
 from app.ingest.pipeline import process_document
 from app.ingest.timeline import rebuild_document
-from app.schemas.document import DocumentDetail, DocumentRead
+from app.schemas.document import DocumentDetail, DocumentFile, DocumentRead
 
 logger = logging.getLogger(__name__)
 
@@ -128,6 +128,103 @@ def get_document(
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
     return document
+
+
+def _owned(db: Session, document_id: UUID, patient: Patient) -> Document:
+    """The document, if it belongs to whoever is asking. 404 otherwise.
+
+    The same 404 for 'no such document' and 'not yours', deliberately. A
+    distinct 403 would confirm that a given id exists, which is the one thing
+    someone probing ids should not be able to learn.
+    """
+    document = db.scalar(
+        select(Document).where(Document.id == document_id, Document.patient_id == patient.id)
+    )
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    return document
+
+
+@router.get("/{document_id}/file", response_model=DocumentFile)
+def get_document_file(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    patient: Patient = Depends(current_patient),
+) -> DocumentFile:
+    """A link to the original, good for a few minutes.
+
+    This is the ownership check, and it happens here rather than in the storage
+    bucket. The bucket is private and answers to nobody without a signed link;
+    this endpoint decides who gets one. Serving the folder statically would have
+    been two lines and would have let anyone holding a patient id read that
+    patient's prescriptions — the keys are laid out by patient.
+
+    `url` is null when the file is on the local disk, which cannot mint links.
+    The caller falls back to /raw, which is the same bytes through this API.
+
+    A missing original is reported as `available: false` rather than as an
+    error. Documents uploaded before object storage existed lost their file to
+    a redeploy; the facts read out of them are still on the timeline, and the
+    screen should say the page cannot be shown rather than look broken.
+    """
+    document = _owned(db, document_id, patient)
+
+    url: str | None = None
+    available = True
+    try:
+        url = storage.signed_url(document.storage_path)
+    except FileNotFoundError:
+        available = False
+    except storage.StorageError:
+        # Storage being unreachable is not the same as the file being gone, and
+        # must not be reported as though the document were lost.
+        logger.exception("could not sign %s", document.storage_path)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Document storage is unavailable"
+        ) from None
+
+    return DocumentFile(
+        url=url,
+        available=available,
+        filename=document.filename,
+        mime_type=document.mime_type,
+        page_count=document.page_count,
+    )
+
+
+@router.get("/{document_id}/raw")
+def get_document_raw(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    patient: Patient = Depends(current_patient),
+) -> Response:
+    """The original bytes, through this API.
+
+    The fallback for local-disk storage, and the reason the viewer works the
+    same in development as it does deployed. Inline rather than as an
+    attachment: this is for looking at, not for downloading.
+    """
+    document = _owned(db, document_id, patient)
+    try:
+        data = storage.read(document.storage_path)
+    except FileNotFoundError:
+        raise HTTPException(status.HTTP_410_GONE, "The original file is no longer stored") from None
+    except storage.StorageError:
+        logger.exception("could not read %s", document.storage_path)
+        raise HTTPException(
+            status.HTTP_503_SERVICE_UNAVAILABLE, "Document storage is unavailable"
+        ) from None
+
+    return Response(
+        content=data,
+        media_type=document.mime_type,
+        headers={
+            "Content-Disposition": f'inline; filename="{document.filename or document_id}"',
+            # Private: this is one patient's medical record, and a shared proxy
+            # holding a copy is exactly what must not happen.
+            "Cache-Control": "private, max-age=300",
+        },
+    )
 
 
 @router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)

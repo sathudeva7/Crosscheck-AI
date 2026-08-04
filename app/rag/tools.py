@@ -25,7 +25,7 @@ from typing import Any
 from uuid import UUID
 
 from langchain_core.tools import BaseTool, tool
-from sqlalchemy import case, or_, select
+from sqlalchemy import case, func, or_, select
 from sqlalchemy.orm import Session
 
 from app.checks.base import ATC_PREFIX, SEVERITY_FROM_DDINTER, window
@@ -40,6 +40,7 @@ from app.db.models import (
     TimelineVisit,
 )
 from app.ingest.drugs import resolve
+from app.rag.config import TAVILY_API_KEY, WEB_DOMAINS, WEB_RESULTS
 from app.rag.textsearch import search_pages
 
 # Rejected rows are kept so a mistake can be undone, but they are not part of
@@ -61,6 +62,26 @@ SEARCH_LIMIT_MAX = 20
 # The vocabulary the flag columns actually use — 'H' high, 'L' low, 'A'
 # abnormal, 'N' normal. Anything but N (or nothing at all) is worth a mention.
 ABNORMAL_FLAGS = ("H", "L", "A")
+
+# What a finding's severity is called, and what the column stores.
+#
+# These drifted apart and it cost a real answer. The Interactions screen labels
+# its columns 'High-risk', 'Moderate' and 'To monitor', and a finding's own
+# title ends '(Moderate)'; the column stores 'danger', 'warning' and 'info'.
+# Asked to explain a card titled 'Atenolol and Dicyclomine may interact
+# (Moderate)', the model reasonably called get_findings(severity='moderate') —
+# which matched nothing, for a patient holding fourteen findings including that
+# one. The tool reported no findings, and the agent passed that on faithfully.
+#
+# Translating is the fix rather than documenting, because the words the model
+# will reach for are the words on the screen, and those are not ours to choose
+# once they are in front of a reader.
+SEVERITY_ALIASES = {
+    "danger": "danger", "high": "danger", "high-risk": "danger",
+    "major": "danger", "severe": "danger", "serious": "danger",
+    "warning": "warning", "moderate": "warning", "medium": "warning",
+    "info": "info", "low": "info", "minor": "info", "monitor": "info",
+}
 
 
 def _abnormal(event: TimelineEvent) -> bool:
@@ -133,6 +154,37 @@ def _event(event: TimelineEvent, *, span: bool = True) -> dict[str, Any]:
     if span:
         row["source_span"] = event.source_span
     return _clean(row)
+
+
+def _web_search():
+    """The Tavily client, or None when no key is set.
+
+    Built once at import rather than per request — it holds a connection pool,
+    and `build_tools` runs on every question. Returning None rather than raising
+    is the point: the key is one a developer sets locally and forgets on the
+    host, and the record-reading tools that matter must keep working without it.
+    """
+    if not TAVILY_API_KEY:
+        return None
+    try:
+        from langchain_tavily import TavilySearch
+    except ImportError:  # pragma: no cover - the package is optional
+        return None
+    return TavilySearch(
+        tavily_api_key=TAVILY_API_KEY,
+        max_results=WEB_RESULTS,
+        include_domains=WEB_DOMAINS,
+        search_depth="advanced",
+        topic="general",
+        # Tavily's own summary across the pages it found. It is worth more here
+        # than the raw extracts: a drug reference page is mostly boilerplate and
+        # an arbitrary 400-character window of one tends to land in the wrong
+        # section entirely. This lands on the pair that was asked about.
+        include_answer=True,
+    )
+
+
+search_web = _web_search()
 
 
 def _visible(query):
@@ -466,19 +518,44 @@ def build_tools(db: Session, patient_id: UUID) -> list[BaseTool]:
         contradictions and lab trends. These were computed from the drug
         database, not by a model — report them, do not re-derive them.
 
-        severity: optional — 'high', 'moderate', 'low' or 'info'.
+        severity: optional — 'high', 'moderate' or 'low'. Leave it out to see
+            everything, which is almost always what you want: a finding's own
+            title carries its grade, so filtering buys nothing and risks
+            missing the one being asked about.
         """
         query = select(Finding).where(Finding.patient_id == patient_id)
         if not include_dismissed:
             # A dismissal is the user saying "I know, stop telling me".
             query = query.where(Finding.status == "active")
-        if severity:
-            query = query.where(Finding.severity == severity)
 
-        rank = case({"high": 0, "moderate": 1, "low": 2}, value=Finding.severity, else_=3)
+        stored = None
+        if severity:
+            stored = SEVERITY_ALIASES.get(severity.strip().lower())
+            if stored is None:
+                return _empty(
+                    f"{severity!r} is not a severity. Use 'high', 'moderate' or 'low' — "
+                    "or call get_findings() with no severity at all."
+                )
+            query = query.where(Finding.severity == stored)
+
+        rank = case({"danger": 0, "warning": 1, "info": 2}, value=Finding.severity, else_=3)
         rows = db.scalars(query.order_by(rank, Finding.first_seen_at.desc())).all()
 
         if not rows:
+            # An empty filtered result has to say what it filtered by. Reported
+            # as a bare 'no findings' it reads as 'this patient has none', and
+            # an agent told that has no reason to look again.
+            if stored:
+                total = db.scalar(
+                    select(func.count())
+                    .select_from(Finding)
+                    .where(Finding.patient_id == patient_id, Finding.status == "active")
+                )
+                return _empty(
+                    f"no active findings graded {severity!r}, but this patient has "
+                    f"{total} active finding(s) at other grades. Call get_findings() "
+                    "with no severity to see them before concluding anything."
+                )
             return _empty(
                 "no active findings. Before concluding the patient is in the clear, check "
                 "find_medications() for drugs that could not be identified — those are "
@@ -502,6 +579,116 @@ def build_tools(db: Session, patient_id: UUID) -> list[BaseTool]:
                 )
                 for f in rows
             ],
+        }
+
+    # --- background on an interaction the database already found ---------
+
+    def _is_taken(name: str) -> str | None:
+        """The patient's own name for a drug, or None if they do not take it.
+
+        This is the whole gate on the web tool, and it is a query rather than a
+        line in a prompt on purpose. A rule the model is asked to follow is a
+        rule it can be talked out of — by a document, by a stubborn question,
+        by its own reading of what would be helpful. A WHERE clause cannot be
+        talked out of anything.
+        """
+        like = f"%{name.strip()}%"
+        return db.scalar(
+            _visible(
+                select(TimelineEvent.drug_name).where(
+                    TimelineEvent.patient_id == patient_id,
+                    TimelineEvent.event_type == "medication",
+                    TimelineEvent.drug_name.ilike(like)
+                    | TimelineEvent.drug_raw.ilike(like)
+                    | TimelineEvent.title.ilike(like),
+                )
+            ).limit(1)
+        )
+
+    @tool
+    async def explain_interaction(drug_a: str, drug_b: str) -> dict:
+        """Published background on why two of this patient's drugs interact.
+
+        Use this only to put an interaction into plain words *after*
+        get_findings or check_drug has already reported one. It reads
+        drug-reference sites; it does not know this patient and it cannot
+        decide whether an interaction exists. If the record shows no
+        interaction between two drugs, this tool finding articles about them
+        does not create one — say the record shows none.
+
+        Everything it returns is general medical publishing, not this patient's
+        data, and must be attributed as such in the answer.
+
+        drug_a, drug_b: two drugs the patient is recorded as taking.
+        """
+        taken_a, taken_b = _is_taken(drug_a), _is_taken(drug_b)
+        missing = [
+            name for name, found in ((drug_a, taken_a), (drug_b, taken_b)) if not found
+        ]
+        if missing:
+            # Refusing here is what keeps this from becoming a general web
+            # search bolted to a medical record.
+            return _empty(
+                f"{', '.join(repr(m) for m in missing)} is not on this patient's "
+                "medication list, so there is nothing to explain. This tool only "
+                "covers interactions between drugs they actually take — use "
+                "find_medications() to see what those are, or check_drug() to ask "
+                "about a new one."
+            )
+
+        if search_web is None:
+            return _empty(
+                "web lookup is not configured, so no published background is "
+                "available. Answer from the record alone and say that is all "
+                "there is."
+            )
+
+        try:
+            found = await search_web.ainvoke(
+                {
+                    "query": (
+                        f"{taken_a} {taken_b} interaction: what happens when taken "
+                        "together, and what to watch for"
+                    )
+                }
+            )
+        except Exception as problem:  # noqa: BLE001 - a dead network is not a dead answer
+            return _empty(
+                f"the web lookup failed ({type(problem).__name__}). Answer from the "
+                "record alone and say no further background could be retrieved."
+            )
+
+        found = found or {}
+        results = [
+            {
+                "source": "web",
+                "title": r.get("title"),
+                "url": r.get("url"),
+                "text": (r.get("content") or "").strip(),
+            }
+            for r in found.get("results", [])
+            if r.get("url")
+        ]
+        if not results:
+            return _empty(
+                "nothing was published that bears on this pair. Answer from the "
+                "record alone."
+            )
+
+        return {
+            "source": "web",
+            "pair": [taken_a, taken_b],
+            # Read this first: it is drawn across the pages below and stays on
+            # the pair, where a single extract often does not.
+            "summary": (found.get("answer") or "").strip() or None,
+            "count": len(results),
+            "results": results,
+            "hint": (
+                "General published background, not this patient's record. Attribute "
+                "it as such, and keep it separate from what their documents say. It "
+                "cannot establish that this patient has an interaction — only "
+                "get_findings and check_drug can."
+            ),
         }
 
     # --- "can I take this?" ---------------------------------------------
@@ -874,7 +1061,7 @@ def build_tools(db: Session, patient_id: UUID) -> list[BaseTool]:
             ],
         }
 
-    return [
+    built = [
         list_documents,
         get_timeline,
         find_medications,
@@ -886,3 +1073,9 @@ def build_tools(db: Session, patient_id: UUID) -> list[BaseTool]:
         search_text,
         get_uncertain_items,
     ]
+    # Offered only when there is a key behind it. A tool advertised in the
+    # schema and then apologising at call time costs a round trip and teaches
+    # the model to try it again next time.
+    if search_web is not None:
+        built.append(explain_interaction)
+    return built

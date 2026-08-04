@@ -173,6 +173,7 @@ def add_answer(
         grounded=result.get("grounded", True),
         unsupported=result.get("unsupported") or None,
         citations=_jsonable(result.get("citations") or []),
+        web=_jsonable(result.get("web") or []),
         tool_calls=list(result.get("tool_calls") or []),
         truncated=truncated,
     )

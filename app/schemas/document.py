@@ -67,3 +67,25 @@ class DocumentDetail(DocumentRead):
     """DocumentRead plus the per-page transcriptions."""
 
     pages: list[DocumentPageRead] = []
+
+
+class DocumentFile(BaseModel):
+    """Where to fetch the original, and whether there is one.
+
+    `url` is a signed link that expires in minutes — good enough to open a scan
+    and stale by the time it could be shared. It is null when the file lives on
+    the local disk, which has no such thing; the caller then reads the bytes
+    from /documents/{id}/raw instead.
+
+    `available` is false when the document row survives but its file does not.
+    That is a real state, not an error: documents uploaded before object storage
+    existed lost their originals to a container redeploy, while everything read
+    out of them is still on the timeline. The screen says the page cannot be
+    shown; it does not pretend the document was never there.
+    """
+
+    url: str | None = None
+    available: bool = True
+    filename: str | None = None
+    mime_type: str
+    page_count: int | None = None

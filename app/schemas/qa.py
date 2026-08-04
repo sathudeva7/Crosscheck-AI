@@ -49,6 +49,20 @@ class Citation(BaseModel):
     text: str | None = None
 
 
+class WebSource(BaseModel):
+    """One published page an attributed sentence rests on.
+
+    Deliberately not a `Citation`. A citation is a fact read off this patient's
+    own document and carries the confidence that reading earned; this is general
+    drug-reference publishing, which says nothing about them and has no such
+    score. They are shown under separate headings for the same reason they are
+    separate types here — a reader has to be able to tell which is which.
+    """
+
+    url: str
+    title: str | None = None
+
+
 class AskResponse(BaseModel):
     answer: str
 
@@ -65,6 +79,10 @@ class AskResponse(BaseModel):
     basis: str | None = Field(default=None, description="Why the score is what it is.")
 
     citations: list[Citation] = []
+    web: list[WebSource] = Field(
+        default_factory=list,
+        description="Published pages behind any attributed general-medicine sentence.",
+    )
     grounded: bool = True
     unsupported: list[str] | None = Field(
         default=None, description="Claims the verifier could not trace to evidence."
@@ -109,6 +127,7 @@ class MessageRead(BaseModel):
     band: ConfidenceBand = "none"
     basis: str | None = None
     citations: list[Citation] = []
+    web: list[WebSource] = Field(default_factory=list)
     grounded: bool = True
     unsupported: list[str] | None = None
     tool_calls: list[str] = Field(default_factory=list)
@@ -124,7 +143,9 @@ class MessageRead(BaseModel):
     # than absent. Coerced here so the transcript is one shape the whole way
     # down and the client never has to test a field for null before rendering
     # it — `role` is the only branch it needs.
-    @field_validator("band", "grounded", "citations", "tool_calls", "truncated", mode="before")
+    @field_validator(
+        "band", "grounded", "citations", "web", "tool_calls", "truncated", mode="before"
+    )
     @classmethod
     def _default_if_null(cls, value: Any, info: ValidationInfo) -> Any:
         if value is not None:
@@ -154,6 +175,7 @@ def from_agent(result: dict[str, Any], session_id: UUID) -> AskResponse:
         band=result.get("band") or "none",
         basis=result.get("basis"),
         citations=[Citation(**item) for item in result.get("citations") or []],
+        web=[WebSource(**item) for item in result.get("web") or []],
         grounded=result.get("grounded", True),
         unsupported=result.get("unsupported"),
         tool_calls=result.get("tool_calls") or [],

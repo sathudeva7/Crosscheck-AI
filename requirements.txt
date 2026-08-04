@@ -35,6 +35,10 @@ pymupdf==1.28.0
 langchain==1.3.14
 langchain-core==1.5.3
 langchain-openai==1.4.1
+# Web lookup for explain_interaction. Optional at runtime — without
+# TAVILY_API_KEY the tool is not built and the agent answers from the record
+# alone — but pinned here so the deployed image can offer it.
+langchain-tavily==0.2.18
 langchain-text-splitters==1.1.2
 langgraph==1.2.10
 tiktoken==0.13.0
