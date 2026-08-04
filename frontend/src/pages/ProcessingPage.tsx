@@ -71,7 +71,14 @@ export default function ProcessingPage() {
 
   const working = documents?.filter((doc) => !isSettled(doc)) ?? [];
   const failed = documents?.filter((doc) => doc.status === "failed") ?? [];
+  const ready = documents?.filter((doc) => doc.status === "ready") ?? [];
   const finished = documents !== null && working.length === 0;
+
+  // A document that is 'ready' is already on the timeline and already
+  // answerable. Holding someone here until the slowest of five finishes hides
+  // work that is done — five uploads is five times the reading, and the wait
+  // is real, but it is not a wait for *nothing*.
+  const usable = ready.length > 0 && working.length > 0;
 
   // The furthest-along document sets the step, so the display moves forward as
   // soon as any document does rather than waiting for the slowest.
@@ -87,14 +94,16 @@ export default function ProcessingPage() {
 
   const percent = Math.round((Math.min(step, STEPS.length) / STEPS.length) * 100);
 
+  // Says how many are done out of how many, not just how many are left. On a
+  // five-file upload 'reading 5 documents' looks identical for two minutes;
+  // '3 of 5 read' moves, and moving is what tells you nothing is stuck.
+  const total = documents?.length ?? 0;
   const subtitle = error
     ? error
     : documents === null
       ? "Checking on your documents…"
       : working.length > 0
-        ? `Extracting and cross-checking ${working.length} document${
-            working.length === 1 ? "" : "s"
-          }…`
+        ? `${ready.length} of ${total} read · ${working.length} still going`
         : failed.length > 0
           ? `${failed.length} document${failed.length === 1 ? "" : "s"} could not be read.`
           : "Done — opening your timeline.";
@@ -204,14 +213,33 @@ export default function ProcessingPage() {
         {/* Reading can take a while on a long scan, and a card with no way out
             of it is a trap. */}
         {!finished && (
-          <button
-            type="button"
-            className="btn btn-secondary btn-block"
-            style={{ marginTop: 24 }}
-            onClick={() => navigate("/app/documents")}
-          >
-            Back to documents
-          </button>
+          <div style={{ display: "flex", flexDirection: "column", gap: 8, marginTop: 24 }}>
+            {/* Offered only once something is actually there to look at.
+                Reading continues either way — it runs on the server, not on
+                this screen, so leaving costs nothing and the rest arrives on
+                the timeline as it finishes. */}
+            {usable && (
+              <button
+                type="button"
+                className="btn btn-primary btn-block"
+                onClick={() => navigate("/app/timeline")}
+              >
+                View timeline · {ready.length} ready
+              </button>
+            )}
+            <button
+              type="button"
+              className="btn btn-secondary btn-block"
+              onClick={() => navigate("/app/documents")}
+            >
+              Back to documents
+            </button>
+            {usable && (
+              <p style={{ margin: 0, fontSize: 12, color: "rgba(29,31,32,.5)", textAlign: "center" }}>
+                The remaining {working.length} will keep processing without this page open.
+              </p>
+            )}
+          </div>
         )}
       </div>
     </div>
