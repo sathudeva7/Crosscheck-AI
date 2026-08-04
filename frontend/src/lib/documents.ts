@@ -152,3 +152,17 @@ export async function listDocuments(token: string | null): Promise<DocumentRead[
 export async function getDocument(token: string | null, id: string): Promise<DocumentRead> {
   return apiFetch<DocumentRead>(`/documents/${id}`, { token });
 }
+
+/**
+ * Delete a document and everything read out of it.
+ *
+ * The only destructive call in the API. Rejecting a timeline row hides it and
+ * keeps it recoverable; this does not — the visits, the extracted facts and
+ * the stored file all go. Findings are recomputed server-side afterwards,
+ * because a finding about facts that no longer exist is worse than no finding.
+ *
+ * Ask before calling it.
+ */
+export async function deleteDocument(token: string | null, id: string): Promise<void> {
+  return apiFetch<void>(`/documents/${id}`, { method: "DELETE", token });
+}

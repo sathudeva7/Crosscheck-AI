@@ -115,7 +115,7 @@ function initialsOf(name: string | null | undefined): string {
 }
 
 export default function AppShell() {
-  const { state, email, getToken } = useAuth();
+  const { state, email, getToken, signOut } = useAuth();
   const { total: reviewCount, highRisk } = useReviewCount();
   const patientName = state.status === "ready" ? state.patient.full_name : null;
   const displayName = patientName ?? email ?? "Your records";
@@ -246,6 +246,36 @@ export default function AppShell() {
                         : "")}
               </div>
             </div>
+
+            {/* No confirmation step. Signing out destroys nothing — the
+                documents and everything read from them stay on the account —
+                so a dialog here would add friction to something undone by
+                signing back in. */}
+            <button
+              type="button"
+              className="cc-signout"
+              title="Sign out"
+              aria-label="Sign out"
+              onClick={() => void signOut()}
+              style={{
+                marginLeft: "auto",
+                flex: "none",
+                display: "grid",
+                placeItems: "center",
+                width: 30,
+                height: 30,
+                background: "none",
+                border: "1px solid transparent",
+                cursor: "pointer",
+                color: "rgba(29,31,32,.5)",
+              }}
+            >
+              <NavIcon size={16}>
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4" />
+                <path d="M16 17l5-5-5-5" />
+                <path d="M21 12H9" />
+              </NavIcon>
+            </button>
           </div>
 
           <NavLink to="/app/documents" className="btn btn-secondary btn-block" style={{ marginTop: 0 }}>

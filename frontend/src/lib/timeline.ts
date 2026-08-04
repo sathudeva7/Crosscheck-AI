@@ -186,6 +186,18 @@ export async function rejectEvent(
   });
 }
 
+/**
+ * Delete a visit that came from no document, and its facts with it.
+ *
+ * Only for hand-added cards. A card built from an upload is removed through
+ * `deleteDocument` instead — the API returns 409 here, because deleting the
+ * visit while leaving the file would give you a document that has been read
+ * and shows nothing, and the next re-processing would put the card back.
+ */
+export async function deleteVisit(token: string | null, visitId: string): Promise<void> {
+  return apiFetch<void>(`/timeline/visits/${visitId}`, { method: "DELETE", token });
+}
+
 // --- presentation -------------------------------------------------------------
 
 export const EVENT_TYPE_LABELS: Record<EventType, string> = {

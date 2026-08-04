@@ -338,9 +338,18 @@ export default function UploadPage() {
               accept={ACCEPT_ATTRIBUTE}
               style={{ position: "absolute", width: 1, height: 1, opacity: 0 }}
               onChange={(e) => {
-                if (e.target.files) add(e.target.files);
+                // Copied into an array *before* the reset below, and this
+                // ordering is the whole point. `e.target.files` is a live view
+                // of the element's current selection, and clearing `value`
+                // empties it. `add` hands the list to a state updater, which
+                // React runs after this handler returns — so passing the live
+                // list meant the updater read an already-emptied FileList and
+                // silently added nothing. The picker opened, a file was
+                // chosen, and the screen never changed.
+                const chosen = Array.from(e.target.files ?? []);
                 // Reset, or picking the same file twice in a row fires nothing.
                 e.target.value = "";
+                if (chosen.length > 0) add(chosen);
               }}
             />
           </label>

@@ -82,7 +82,14 @@ class Medication(Grounded):
         default=False, description="True if taken only as needed (PRN, SOS, 'if required')."
     )
     instructions: str | None = Field(
-        default=None, description="Other directions, e.g. 'before food', 'with water'."
+        default=None,
+        description=(
+            "Other directions, e.g. 'before food', 'with water'. If the direction "
+            "is written in another language, give the English meaning and keep the "
+            "original after it in brackets: 'on an empty stomach (ભૂખ્યા પેટે)'. "
+            "Keep the original even when you translate — it is what the page "
+            "actually says, and the reader may need to show it to a pharmacist."
+        ),
     )
 
 

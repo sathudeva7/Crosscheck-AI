@@ -72,6 +72,15 @@ Rules:
 - Text marked ~~struck through~~ was cancelled. Do not record it.
 - Text marked [redacted] was masked on the original document. Leave the field
   null rather than inventing a value.
+- Free-text directions written in another language — Gujarati, Hindi, Tamil,
+  Sinhala, Urdu — are recorded as their English meaning followed by the
+  original in brackets: 'on an empty stomach (ભૂખ્યા પેટે)'. This is the one
+  place the rules above bend, and only for wording. Translating is not adding
+  a fact: it is the same direction the document gave, in a language its reader
+  can act on, and a direction nobody can read is a direction nobody follows.
+  Never translate a drug name, a number, a unit or a dose — those are copied
+  exactly, like everything else. If you are unsure of the meaning, keep the
+  original alone rather than guessing at it.
 - Set confidence honestly per item: high for clearly printed text, low where
   the transcription is uncertain or the layout makes it unclear which value
   belongs to which label.

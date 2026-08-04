@@ -41,10 +41,7 @@ MAX_PAGES = int(os.getenv("MAX_PAGES", 50))
 
 # --- ingestion models --------------------------------------------------------
 
-# Reads scanned and handwritten pages. Deliberately separate from the RAG
-# models in app/rag/config.py — a mini model is fine for classification but
-# too weak for handwriting.
-VISION_MODEL = os.getenv("VISION_MODEL", "openai:gpt-4o")
+VISION_MODEL = os.getenv("VISION_MODEL", "openai:gpt-5.4")
 
 # Pages are transcribed concurrently; this caps in-flight vision calls so a
 # long document does not trip provider rate limits.

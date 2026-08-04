@@ -16,11 +16,12 @@ from datetime import UTC, date, datetime
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
 from sqlalchemy import case, func, select
 from sqlalchemy.orm import Session, selectinload
 
 from app.auth import current_patient
+from app.checks.engine import run_checks
 from app.db.models import Patient, TimelineEvent, TimelineVisit
 from app.db.session import get_db
 from app.ingest.drugs import resolve
@@ -398,3 +399,39 @@ def _visit_for(db: Session, patient: Patient, body: TimelineEventCreate) -> Time
         db.add(visit)
         db.flush()
     return visit
+
+
+@router.delete("/visits/{visit_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_visit(
+    visit_id: UUID,
+    db: Session = Depends(get_db),
+    patient: Patient = Depends(current_patient),
+) -> Response:
+    """Remove a card that came from no document, and its facts with it.
+
+    Only for hand-added visits. A card built from an upload is deleted through
+    the document instead — removing the visit while leaving the file behind
+    would produce a document that has been read but shows nothing, and the next
+    re-processing would put the card straight back.
+    """
+    visit = db.scalar(
+        select(TimelineVisit).where(
+            TimelineVisit.id == visit_id, TimelineVisit.patient_id == patient.id
+        )
+    )
+    if visit is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "No such visit on your timeline")
+
+    if visit.document_id is not None:
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This visit came from a document. Delete the document to remove it.",
+        )
+
+    db.delete(visit)
+    db.commit()
+
+    await run_checks(db, patient.id)
+    db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)

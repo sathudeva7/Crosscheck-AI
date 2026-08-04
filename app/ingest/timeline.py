@@ -37,7 +37,9 @@ from typing import Any
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
-from app.db.models import Document, TimelineEvent, TimelineVisit
+from app.db.models import Document, DocumentPage, TimelineEvent, TimelineVisit
+from app.ingest.normalize import parse_date
+from app.ingest.review import DEFAULT_PRIOR, MODALITY_PRIOR
 
 logger = logging.getLogger(__name__)
 
@@ -49,6 +51,18 @@ EVENT_TYPE_BY_KIND = {
     "Diagnosis": "diagnosis",
     "Allergy": "allergy",
     "Procedure": "procedure",
+}
+
+# Plain-text fields on an extraction form, and the title they get as events.
+#
+# These are strings rather than lists of objects, so they carry no `kind` and
+# review.py never grades them — which meant the loop below skipped them and
+# they reached the database in extraction_json and stopped there. A follow-up
+# date printed on the prescription was extracted correctly and then invisible
+# to every screen and every tool that reads the timeline.
+NOTE_FIELDS = {
+    "follow_up": "Follow-up",
+    "advice": "Advice",
 }
 
 
@@ -422,6 +436,87 @@ def _build_visit(
     return visit
 
 
+def _build_notes(
+    db: Session,
+    document: Document,
+    visit: TimelineVisit,
+    group: dict[str, Any],
+    data: dict[str, Any],
+    existing: dict[str, TimelineEvent],
+    seen: set[str],
+) -> tuple[int, int, int]:
+    """Turn the form's free-text fields into note events. Returns (new, updated, skipped).
+
+    Confidence comes from how the page was read and nothing else. There is no
+    grounding check to lean on: ground.py verifies a `source_span` quoted back
+    by the model, and these fields have none — the extractor copied a line of
+    text rather than filling in a structured item. Claiming a score derived
+    from checks that did not run would be worse than claiming none, so what is
+    recorded is the honest floor for 'a model read this off a page of this
+    kind'.
+
+    A follow-up date is given its own date so it lands where it belongs on the
+    timeline. Advice keeps the visit's date: it was said at the visit.
+    """
+    created = updated = skipped = 0
+    pages = group.get("pages") or []
+    page_no = pages[0] if pages else None
+    modality = _page_modality(db, document, page_no)
+
+    for field, title in NOTE_FIELDS.items():
+        text = (data.get(field) or "").strip() if isinstance(data.get(field), str) else ""
+        if not text:
+            continue
+
+        seen.add(field)
+        event = existing.get(field)
+
+        if event is not None and event.user_decided:
+            skipped += 1
+            continue
+
+        if event is None:
+            event = TimelineEvent(
+                patient_id=document.patient_id,
+                document_id=document.id,
+                extraction_path=field,
+            )
+            db.add(event)
+            created += 1
+        else:
+            updated += 1
+
+        when = parse_date(text).value if field == "follow_up" else None
+
+        event.visit_id = visit.id
+        event.event_type = "note"
+        event.event_date = when or visit.visit_date
+        event.page_no = page_no
+        event.source_span = text
+        event.title = title
+        event.description = text
+        event.display_text = f"{title}: {text}"
+        event.confidence = MODALITY_PRIOR.get(modality or "", DEFAULT_PRIOR)
+        event.review_status = "accepted"
+        event.review_reasons = None
+        event.risk = "low"
+        event.signals = {"free_text": True, "field": field}
+        event.source = "ai"
+
+    return created, updated, skipped
+
+
+def _page_modality(db: Session, document: Document, page_no: int | None) -> str | None:
+    """How the page this text came from was read — digital, scanned, handwritten."""
+    if page_no is None:
+        return None
+    return db.scalar(
+        select(DocumentPage.modality).where(
+            DocumentPage.document_id == document.id, DocumentPage.page_no == page_no
+        )
+    )
+
+
 def rebuild_document(db: Session, document: Document) -> BuildResult:
     """Rewrite this document's timeline rows from its extraction.
 
@@ -506,6 +601,12 @@ def rebuild_document(db: Session, document: Document) -> BuildResult:
             event.risk = verdict.get("risk") or "low"
             event.signals = verdict.get("signals") or {}
             event.source = "ai"
+
+        # The plain-text fields, which the loop above cannot reach.
+        result_note = _build_notes(db, document, visit, group, data, existing, seen)
+        result.events += result_note[0]
+        result.updated += result_note[1]
+        result.skipped += result_note[2]
 
     # Facts that disappeared from the extraction — usually because the document
     # was re-read and the model grouped things differently.

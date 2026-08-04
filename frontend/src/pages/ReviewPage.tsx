@@ -341,7 +341,7 @@ function Card({
                 {busy === "approve" ? "Saving…" : "Looks right"}
               </button>
               <button className="btn btn-secondary" disabled={busy !== null} onClick={beginEdit}>
-                Correct
+                Edit
               </button>
               <button
                 className="btn btn-ghost"

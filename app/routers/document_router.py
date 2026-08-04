@@ -7,6 +7,7 @@ Upload returns immediately. Processing happens in the background, so clients
 poll GET /documents/{id} until status is 'ready' or 'failed'.
 """
 
+import logging
 from uuid import UUID
 
 from fastapi import (
@@ -24,11 +25,15 @@ from sqlalchemy.orm import Session, selectinload
 
 from app import storage
 from app.auth import current_patient
+from app.checks.engine import run_checks
 from app.config import ALLOWED_MIME_TYPES, MAX_UPLOAD_MB
 from app.db.models import Document, Patient
 from app.db.session import get_db
 from app.ingest.pipeline import process_document
+from app.ingest.timeline import rebuild_document
 from app.schemas.document import DocumentDetail, DocumentRead
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/documents", tags=["documents"])
 
@@ -122,4 +127,96 @@ def get_document(
     )
     if document is None:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+    return document
+
+
+@router.delete("/{document_id}", status_code=status.HTTP_204_NO_CONTENT)
+async def delete_document(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    patient: Patient = Depends(current_patient),
+) -> Response:
+    """Remove a document and everything read out of it.
+
+    Genuinely destructive, and the only destructive operation in the API.
+    Rejecting a timeline row hides it and keeps it; this does not. It exists
+    because the other kind of mistake needs a different remedy: a report
+    belonging to someone else, or a duplicate upload, should leave no trace
+    rather than sit in a review queue forever.
+
+    The visits and extracted facts go with it by cascade — timeline_visit
+    references document ON DELETE CASCADE, and timeline_event references the
+    visit the same way, so removing the row at the top removes the branch.
+
+    Findings are then recomputed, because a finding is a statement about facts
+    that no longer exist. Leaving them would warn about an interaction between
+    two drugs, one of which is no longer on the record.
+    """
+    document = db.scalar(
+        select(Document).where(Document.id == document_id, Document.patient_id == patient.id)
+    )
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+
+    stored = document.storage_path
+    db.delete(document)
+    db.commit()
+
+    # After the commit, and deliberately. A file removed before the row is
+    # gone is a file missing from a document that still exists — the failure
+    # mode that leaves a page unreadable rather than absent.
+    storage.delete(stored)
+
+    await run_checks(db, patient.id)
+    db.commit()
+
+    return Response(status_code=status.HTTP_204_NO_CONTENT)
+
+
+@router.post("/{document_id}/rebuild", response_model=DocumentRead)
+async def rebuild(
+    document_id: UUID,
+    db: Session = Depends(get_db),
+    patient: Patient = Depends(current_patient),
+) -> Document:
+    """Rewrite this document's timeline rows from the extraction already stored.
+
+    No model call, no cost, no network. Everything it needs is in
+    `extraction_json`, which is why this exists at all: when the mapping from
+    extraction to timeline changes — a field that used to be dropped now
+    becoming an event — every document read before the change is missing rows
+    it should have. Re-uploading would fix that too, but at the price of
+    transcribing and extracting again for facts that were read correctly the
+    first time.
+
+    Corrections survive. `rebuild_document` leaves rows a person has confirmed,
+    corrected or rejected exactly as they are.
+    """
+    document = db.scalar(
+        select(Document).where(Document.id == document_id, Document.patient_id == patient.id)
+    )
+    if document is None:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "Document not found")
+
+    if not (document.extraction_json or {}).get("groups"):
+        raise HTTPException(
+            status.HTTP_409_CONFLICT,
+            "This document has no stored extraction to rebuild from. Upload it again.",
+        )
+
+    result = rebuild_document(db, document)
+    db.commit()
+    logger.info(
+        "rebuilt %s: %d new, %d updated, %d left alone",
+        document.id,
+        result.events,
+        result.updated,
+        result.skipped,
+    )
+
+    # The timeline changed, so findings computed from it are out of date.
+    await run_checks(db, patient.id)
+    db.commit()
+
+    db.refresh(document)
     return document

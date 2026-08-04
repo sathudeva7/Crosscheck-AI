@@ -38,6 +38,9 @@ langchain-openai==1.4.1
 langchain-text-splitters==1.1.2
 langgraph==1.2.10
 tiktoken==0.13.0
+# Arrives as a LangChain dependency, pinned here because it is also the tracing
+# client: an unpinned bump could change what a trace records.
+langsmith==0.10.14
 
 # --- outbound http -----------------------------------------------------------
 # httpx for RxNorm, RxClass and openFDA; requests and bs4 for the tutorial

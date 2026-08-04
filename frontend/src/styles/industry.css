@@ -426,3 +426,50 @@ textarea.input { min-height: 90px; resize: vertical; }
 .cc-thread:hover .cc-thread-x,
 .cc-thread:focus-within .cc-thread-x { opacity: 1; }
 .cc-thread:hover { background: rgba(89, 128, 166, 0.07); }
+
+/* Sign out. Quiet until reached: it sits beside the account name, where a
+   button competing for attention would look like something to press. */
+.cc-signout:hover,
+.cc-signout:focus-visible {
+  color: var(--color-danger) !important;
+  border-color: var(--color-divider) !important;
+  background: var(--color-surface);
+}
+
+/* --- card actions ----------------------------------------------------------- */
+
+/* The ⋯ button on a timeline visit. Invisible until reached, because a control
+   on every card would compete with the record itself for attention. */
+.cc-dots:hover,
+.cc-dots:focus-visible {
+  border-color: var(--color-divider) !important;
+  background: var(--color-surface);
+  color: var(--color-text) !important;
+}
+
+.cc-menu-item {
+  display: block;
+  width: 100%;
+  text-align: left;
+  padding: 9px 13px;
+  font: inherit;
+  font-size: 13.5px;
+  background: none;
+  border: 0;
+  border-bottom: 1px solid var(--color-divider);
+  cursor: pointer;
+  color: var(--color-text);
+}
+.cc-menu-item:last-child { border-bottom: 0; }
+.cc-menu-item:hover { background: rgba(89, 128, 166, 0.09); }
+.cc-menu-danger { color: var(--color-danger); }
+.cc-menu-danger:hover { background: var(--color-danger-bg); }
+
+/* Reserved for actions that do not keep what they remove. Nothing else in the
+   app is filled red, so the colour itself is the warning. */
+.cc-danger {
+  background: var(--color-danger);
+  color: var(--color-bg);
+  border-color: var(--color-danger);
+}
+.cc-danger:hover:not(:disabled) { background: #8e3a35; }
