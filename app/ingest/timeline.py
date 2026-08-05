@@ -30,6 +30,7 @@ record, so the check is here, in the writer, rather than left to a caller.
 
 import logging
 import re
+from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import date, datetime, timedelta
 from typing import Any
@@ -73,6 +74,28 @@ class BuildResult:
     updated: int = 0
     skipped: int = 0  # rows a user has decided on
     removed: int = 0
+
+
+# The only flags the column will take — mirrors the CHECK in 003_timeline.sql.
+PRINTED_FLAGS = ("H", "L", "N", "A")
+
+
+def _printed_flag(raw: Any) -> str | None:
+    """The lab's own flag, if it is one we can store.
+
+    Labs mark an out-of-range result with whatever their software prints, and
+    it is not always a letter: one report here uses '#'. Taking the first
+    character and storing it violated the CHECK constraint, which aborted the
+    insert, poisoned the session, and left the whole document stranded in
+    'extracting' — one unrecognised character losing three pages of results.
+
+    Dropping it costs nothing. `computed_flag`, worked out from the reference
+    range, is the value everything downstream actually reads, and it is the one
+    to trust anyway: a lab that prints the wrong flag is precisely what this app
+    exists to catch.
+    """
+    letter = (str(raw) if raw is not None else "").strip().upper()[:1]
+    return letter if letter in PRINTED_FLAGS else None
 
 
 # --- reading a path back out of the extraction --------------------------------
@@ -297,7 +320,7 @@ def _lab_fields(item: dict[str, Any], normalized: dict[str, Any]) -> dict[str, A
         "operator": measurement.get("operator"),
         "ref_low": reference.get("low"),
         "ref_high": reference.get("high"),
-        "flag": (item.get("flag") or "").strip().upper()[:1] or None,
+        "flag": _printed_flag(item.get("flag")),
         "computed_flag": normalized.get("computed_flag"),
         "details": {
             key: item[key]
@@ -444,6 +467,7 @@ def _build_notes(
     data: dict[str, Any],
     existing: dict[str, TimelineEvent],
     seen: set[str],
+    key_for: Callable[[str], str],
 ) -> tuple[int, int, int]:
     """Turn the form's free-text fields into note events. Returns (new, updated, skipped).
 
@@ -468,8 +492,9 @@ def _build_notes(
         if not text:
             continue
 
-        seen.add(field)
-        event = existing.get(field)
+        key = key_for(field)
+        seen.add(key)
+        event = existing.get(key)
 
         if event is not None and event.user_decided:
             skipped += 1
@@ -479,7 +504,7 @@ def _build_notes(
             event = TimelineEvent(
                 patient_id=document.patient_id,
                 document_id=document.id,
-                extraction_path=field,
+                extraction_path=key,
             )
             db.add(event)
             created += 1
@@ -526,6 +551,19 @@ def rebuild_document(db: Session, document: Document) -> BuildResult:
     result = BuildResult()
     groups = (document.extraction_json or {}).get("groups") or []
 
+    # An extraction path is relative to its group — 'results[0]', 'advice' —
+    # while the unique key it is stored under is (document_id, extraction_path).
+    # For a one-group document those agree. For a document that split into
+    # several, every group offers a 'results[0]' and the second one collides,
+    # which is why a multi-page report could never finish: the insert failed,
+    # the session broke, and the row sat in 'extracting' for ever.
+    #
+    # Qualified only when there is more than one group, deliberately. Rows
+    # already stored by a single-group document keep the exact key they have,
+    # so nothing is orphaned and no row a user has corrected is duplicated.
+    def key_for(group_no: int, path: str) -> str:
+        return f"groups[{group_no}].{path}" if len(groups) > 1 else path
+
     existing = {
         event.extraction_path: event
         for event in db.scalars(
@@ -535,10 +573,36 @@ def rebuild_document(db: Session, document: Document) -> BuildResult:
     }
     seen: set[str] = set()
 
+    # One card per visit, not per group. A 19-page lab report is split into as
+    # many groups as one model call can hold, and every one of them carries the
+    # same date and the same type — so without this the timeline showed a single
+    # morning at the lab as four separate visits, each a partial list of the
+    # same results. Groups are a limit of the extractor; they are not something
+    # that happened to the patient.
+    # Worked out before anything is created. Creating a card and deleting it a
+    # moment later is not the same thing: timeline_event.visit_id cascades, so
+    # removing a redundant visit takes every event already hanging off it —
+    # measured, once, as 86 events becoming 34.
+    owner: dict[int, int] = {}
+    first_seen: dict[tuple[Any, str], int] = {}
     for group_no, group in enumerate(groups):
-        visit = _build_visit(db, document, group_no, group)
-        db.flush()  # need visit.id for the events below
-        result.visits += 1
+        when = group.get("date") or {}
+        key = (_parse_date(when), group.get("doc_type") or "unknown")
+        if key[0] is not None and key in first_seen:
+            owner[group_no] = first_seen[key]
+        else:
+            first_seen.setdefault(key, group_no)
+            owner[group_no] = group_no
+
+    built: dict[int, TimelineVisit] = {}
+
+    for group_no, group in enumerate(groups):
+        holder = owner[group_no]
+        if holder not in built:
+            built[holder] = _build_visit(db, document, holder, groups[holder])
+            db.flush()  # need visit.id for the events below
+            result.visits += 1
+        visit = built[holder]
 
         data = group.get("data") or {}
         normalized_all = group.get("normalized") or {}
@@ -556,8 +620,9 @@ def rebuild_document(db: Session, document: Document) -> BuildResult:
                 logger.warning("%s: %s not found in extraction data", document.id, path)
                 continue
 
-            seen.add(path)
-            event = existing.get(path)
+            key = key_for(group_no, path)
+            seen.add(key)
+            event = existing.get(key)
 
             if event is not None and event.user_decided:
                 result.skipped += 1
@@ -567,7 +632,7 @@ def rebuild_document(db: Session, document: Document) -> BuildResult:
                 event = TimelineEvent(
                     patient_id=document.patient_id,
                     document_id=document.id,
-                    extraction_path=path,
+                    extraction_path=key,
                 )
                 db.add(event)
                 result.events += 1
@@ -603,7 +668,10 @@ def rebuild_document(db: Session, document: Document) -> BuildResult:
             event.source = "ai"
 
         # The plain-text fields, which the loop above cannot reach.
-        result_note = _build_notes(db, document, visit, group, data, existing, seen)
+        result_note = _build_notes(
+            db, document, visit, group, data, existing, seen,
+            lambda field: key_for(group_no, field),
+        )
         result.events += result_note[0]
         result.updated += result_note[1]
         result.skipped += result_note[2]
@@ -615,12 +683,15 @@ def rebuild_document(db: Session, document: Document) -> BuildResult:
             db.delete(event)
             result.removed += 1
 
-    # Visits beyond the current group count, left over from a previous run.
+    # Visits this run did not use, left over from a previous one. Tested against
+    # the set actually built rather than against len(groups): several groups can
+    # now share one card, so the unused numbers are no longer only the ones off
+    # the end.
     for visit in db.scalars(
-        select(TimelineVisit).where(
-            TimelineVisit.document_id == document.id, TimelineVisit.group_no >= len(groups)
-        )
+        select(TimelineVisit).where(TimelineVisit.document_id == document.id)
     ):
+        if visit.group_no in built:
+            continue
         if any(event.user_decided for event in visit.events):
             continue  # someone has worked on this; leave it alone
         db.delete(visit)

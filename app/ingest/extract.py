@@ -33,7 +33,7 @@ from typing import Any
 from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 
-from app.config import EXTRACT_MODEL, MAX_CONCURRENT_EXTRACT
+from app.config import EXTRACT_MODEL, MAX_CONCURRENT_EXTRACT, MODEL_RETRIES, MODEL_TIMEOUT
 from app.ingest.classify import PageClassification
 from app.schemas.extraction import _BaseExtraction, schema_for
 
@@ -129,6 +129,30 @@ class ExtractedGroup:
 # --- grouping ----------------------------------------------------------------
 
 
+# Types that are one long document rather than several short ones stacked up.
+#
+# A 19-page lab report repeats its letterhead on every page, so classify gives
+# each page a real type instead of 'continuation' and the grouping below splits
+# it into nineteen. Measured: 18 separate model calls, 37 of the upload's 42
+# seconds. Rejoining them is a straight win — one call instead of eighteen, and
+# the model sees the reference ranges from the header alongside the values on
+# later pages.
+#
+# Prescriptions are deliberately absent, and so is doctor_note. Those are the
+# short documents people scan back to back, and merging two of them would give
+# one header, one date, and two visits collapsed into one. Over-splitting costs
+# time; under-splitting loses a visit. Only the first is worth trading.
+MERGEABLE_TYPES = frozenset(
+    {
+        "lab_report",
+        "discharge_summary",
+        "radiology_report",
+        "pathology_report",
+        "operative_note",
+    }
+)
+
+
 def group_pages(
     classifications: Sequence[PageClassification],
     transcriptions: dict[int, str],
@@ -139,10 +163,9 @@ def group_pages(
     appended to the open one. Two prescriptions scanned back to back therefore
     stay two groups, which is right — they are two documents.
 
-    The mirror-image case is a report whose every page repeats its header, so
-    classify gives each page a real type and this over-splits it. Each part
-    still extracts correctly; the pieces are reconciled later, when events are
-    merged into the timeline by date and document.
+    Then neighbouring pages of a long-form type are rejoined, up to the size one
+    call can take. See MERGEABLE_TYPES for why that is safe for a lab report and
+    not for a prescription.
     """
     groups: list[PageGroup] = []
 
@@ -160,7 +183,36 @@ def group_pages(
             PageGroup(pages=[item.page_no], doc_type=item.resolved_type, text=text)
         )
 
+    groups = _rejoin(groups)
     return [g for g in groups if len(g.text) >= MIN_EXTRACTABLE_CHARS]
+
+
+def _rejoin(groups: list[PageGroup]) -> list[PageGroup]:
+    """Merge neighbouring groups that are really one document.
+
+    Three conditions, all required: the same long-form type, pages that actually
+    run on from one another, and a combined size one call can still take. The
+    size ceiling is the same MAX_GROUP_CHARS that `_split` would otherwise undo
+    a moment later.
+    """
+    merged: list[PageGroup] = []
+
+    for group in groups:
+        last = merged[-1] if merged else None
+        joinable = (
+            last is not None
+            and group.doc_type == last.doc_type
+            and group.doc_type in MERGEABLE_TYPES
+            and group.pages[0] == last.pages[-1] + 1
+            and len(last.text) + len(group.text) + 2 <= MAX_GROUP_CHARS
+        )
+        if joinable:
+            last.pages.extend(group.pages)
+            last.text += "\n\n" + group.text
+            continue
+        merged.append(group)
+
+    return merged
 
 
 def _split(text: str, limit: int = MAX_GROUP_CHARS) -> list[str]:
@@ -230,7 +282,12 @@ def _get_model(schema: type[_BaseExtraction]):
     """
     key = schema.__name__
     if key not in _models:
-        _models[key] = init_chat_model(EXTRACT_MODEL, temperature=0).with_structured_output(
+        _models[key] = init_chat_model(
+            EXTRACT_MODEL,
+            temperature=0,
+            timeout=MODEL_TIMEOUT,
+            max_retries=MODEL_RETRIES,
+        ).with_structured_output(
             schema, method="function_calling"
         )
     return _models[key]

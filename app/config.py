@@ -52,6 +52,26 @@ ALLOWED_MIME_TYPES = {
 
 # --- page handling -----------------------------------------------------------
 
+# --- model calls -------------------------------------------------------------
+#
+# How long to wait on one model call, and how many times to try again.
+#
+# Set because the defaults are not survivable. The OpenAI SDK waits 600 seconds
+# for a read and retries twice, so a connection dropped mid-request — routine on
+# a home line — parks a document in 'extracting' for up to half an hour with
+# nothing on screen but a spinner. Measured on a real 19-page upload: 618
+# seconds and still waiting, on a socket the network had already closed.
+#
+# A dropped connection almost always fails instantly on the retry, so a short
+# timeout with more attempts recovers in seconds where the default recovers in
+# minutes. The worst case drops from ~30 minutes to ~6.
+MODEL_TIMEOUT = int(os.getenv("MODEL_TIMEOUT", 120))
+MODEL_RETRIES = int(os.getenv("MODEL_RETRIES", 3))
+
+# Vision gets longer: the request carries a rasterised page, so it is uploading
+# a megabyte before the model starts, and a slow upstream link is not a fault.
+VISION_TIMEOUT = int(os.getenv("VISION_TIMEOUT", 180))
+
 # Rasterisation DPI for the vision model. Rendering too low is the single most
 # common cause of bad reads; 200-300 is the useful band.
 PAGE_RENDER_DPI = int(os.getenv("PAGE_RENDER_DPI", 220))

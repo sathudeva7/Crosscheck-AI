@@ -21,7 +21,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 
 from app.checks.base import Candidate
-from app.config import EXPLAIN_MODEL
+from app.config import EXPLAIN_MODEL, MODEL_RETRIES, MODEL_TIMEOUT
 
 logger = logging.getLogger(__name__)
 
@@ -90,7 +90,12 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
-        _model = init_chat_model(EXPLAIN_MODEL, temperature=0)
+        _model = init_chat_model(
+            EXPLAIN_MODEL,
+            temperature=0,
+            timeout=MODEL_TIMEOUT,
+            max_retries=MODEL_RETRIES,
+        )
     return _model
 
 

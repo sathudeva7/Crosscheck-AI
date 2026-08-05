@@ -52,6 +52,8 @@ from app.config import (
     DRUG_MODEL,
     ENABLE_DRUG_LOOKUP,
     MAX_CONCURRENT_RXNAV,
+    MODEL_RETRIES,
+    MODEL_TIMEOUT,
     RXNAV_BASE_URL,
     RXNAV_TIMEOUT,
 )
@@ -279,7 +281,12 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
-        _model = init_chat_model(DRUG_MODEL, temperature=0).with_structured_output(
+        _model = init_chat_model(
+            DRUG_MODEL,
+            temperature=0,
+            timeout=MODEL_TIMEOUT,
+            max_retries=MODEL_RETRIES,
+        ).with_structured_output(
             IngredientGuess, method="function_calling"
         )
     return _model

@@ -246,6 +246,47 @@ async def _extract(
     return failed
 
 
+async def resume_stranded() -> None:
+    """Pick up documents a restart left mid-flight.
+
+    Ingestion runs as a background task inside the serving process, so anything
+    still working when the process stops dies with it — and dies without
+    reaching the handler that would mark it failed. The row keeps whatever
+    status it had reached and stays there for ever: a spinner that never
+    resolves, on a document that is often nearly finished.
+
+    Not a rare case. Every deploy does it, and in development every saved file
+    does it, because --reload restarts the worker. Two uploads were lost to a
+    single unrelated edit while this was being written.
+
+    Resuming rather than failing them, because it is nearly free: the
+    transcriptions are already cached on the page rows and the extraction is
+    already stored, so a resumed document usually only has to rebuild its
+    timeline. A document that genuinely cannot be processed reaches the
+    catch-all in `process_document` and settles as failed, so this cannot loop.
+    """
+    db = SessionLocal()
+    try:
+        rows = db.execute(
+            select(Document.id, Document.filename)
+            .where(Document.status.notin_(("ready", "failed")))
+            .order_by(Document.created_at)
+        ).all()
+    finally:
+        db.close()
+
+    if not rows:
+        return
+
+    logger.info("resuming %s document(s) left mid-processing by a restart", len(rows))
+    for document_id, filename in rows:
+        logger.info("resuming %s (%s)", filename or document_id, document_id)
+        try:
+            await process_document(document_id)
+        except Exception:  # noqa: BLE001 - one bad document must not stop the rest
+            logger.exception("could not resume %s", document_id)
+
+
 def _others_still_processing(db: Session, document: Document) -> bool:
     """Whether another of this patient's documents is still being read.
 

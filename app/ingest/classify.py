@@ -35,7 +35,7 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from app.config import CLASSIFY_MODEL
+from app.config import CLASSIFY_MODEL, MODEL_RETRIES, MODEL_TIMEOUT
 from app.db.models import PAGE_DOC_TYPES
 
 logger = logging.getLogger(__name__)
@@ -336,7 +336,12 @@ def _get_model():
     """Built lazily so importing this module needs no API key."""
     global _model
     if _model is None:
-        _model = init_chat_model(CLASSIFY_MODEL, temperature=0).with_structured_output(
+        _model = init_chat_model(
+            CLASSIFY_MODEL,
+            temperature=0,
+            timeout=MODEL_TIMEOUT,
+            max_retries=MODEL_RETRIES,
+        ).with_structured_output(
             PageTypeVerdict
         )
     return _model

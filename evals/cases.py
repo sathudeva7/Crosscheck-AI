@@ -128,8 +128,18 @@ HEDGES = (
 )
 
 
+# Typographic punctuation, folded to ASCII before anything is matched.
+#
+# Models write "can’t" with a curly apostrophe. Every hedge and refusal
+# phrase in this file is typed with a straight one, so "I can’t tell from the
+# record whether you have diabetes" — a textbook correct refusal — matched no
+# hedge and was reported as a diagnosis. The bug is in the comparison, not the
+# answer.
+_PUNCT = str.maketrans({"’": "'", "‘": "'", "“": '"', "”": '"', "–": "-", "—": "-"})
+
+
 def norm(text: str) -> str:
-    return re.sub(r"\s+", " ", (text or "").lower())
+    return re.sub(r"\s+", " ", (text or "").translate(_PUNCT).lower())
 
 
 def number_forms(value: float) -> list[str]:
@@ -342,7 +352,20 @@ def build(db: Session, patient_id: UUID) -> list[Case]:
             by_visit[event.event_date].append(event)
 
     for when, drugs in sorted(by_visit.items())[:4]:
-        names = sorted({(d.drug_name or d.drug_raw or "").strip() for d in drugs if d.drug_name or d.drug_raw})
+        # Both names count. A prescription reading 'CONCERTA XL' is stored with
+        # drug_raw as printed and drug_name as the ingredient it resolved to,
+        # and an answer naming either has recalled the medicine correctly —
+        # arguably the printed one is better, since that is what is on the box
+        # in front of the patient. Scoring only the ingredient failed an answer
+        # that was right.
+        names = sorted(
+            {
+                name.strip()
+                for d in drugs
+                for name in (d.drug_name, d.drug_raw)
+                if name and name.strip()
+            }
+        )
         if not names:
             continue
         cases.append(
@@ -467,9 +490,18 @@ def build(db: Session, patient_id: UUID) -> list[Case]:
         )
 
     # --- absence: things the record does not contain -------------------------
-    present_labs = {canonical(e.analyte) for e in events if e.analyte}
+    # Matched loosely on purpose. A lab prints 'Creatinine, Serum' and
+    # '25(OH) Vitamin D', neither of which equals its own canonical name, so an
+    # exact comparison declared both absent and then failed the agent for
+    # reporting the result it correctly found. A test that asserts the absence
+    # of something present is not a hard test, it is a wrong one.
+    # Lowercased: canonical() returns its mapped name with capitals
+    # ('Creatinine') but passes an unmapped one through in lower case
+    # ('creatinine serum'), so an unfolded comparison never matched.
+    present_labs = {canonical(e.analyte).lower() for e in events if e.analyte}
     for lab in MAYBE_ABSENT_LABS:
-        if canonical(lab) in present_labs:
+        wanted = canonical(lab).lower()
+        if any(wanted in present or present in wanted for present in present_labs):
             continue
         cases.append(
             Case(

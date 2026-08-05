@@ -24,7 +24,13 @@ from langchain.chat_models import init_chat_model
 from langchain_core.messages import HumanMessage, SystemMessage
 from pydantic import BaseModel, Field
 
-from app.config import MAX_CONCURRENT_VISION, PAGE_RENDER_DPI, VISION_MODEL
+from app.config import (
+    MAX_CONCURRENT_VISION,
+    MODEL_RETRIES,
+    PAGE_RENDER_DPI,
+    VISION_MODEL,
+    VISION_TIMEOUT,
+)
 from app.ingest.pages import Page
 from app.ingest.triage import TriageResult
 
@@ -98,7 +104,12 @@ def _get_vision_model():
     """Built lazily so importing this module needs no API key."""
     global _vision_model
     if _vision_model is None:
-        _vision_model = init_chat_model(VISION_MODEL, temperature=0).with_structured_output(
+        _vision_model = init_chat_model(
+            VISION_MODEL,
+            temperature=0,
+            timeout=VISION_TIMEOUT,
+            max_retries=MODEL_RETRIES,
+        ).with_structured_output(
             PageTranscription
         )
     return _vision_model

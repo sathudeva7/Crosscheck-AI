@@ -5,6 +5,7 @@ per patient, cross-checks that timeline for drug interactions, duplicates,
 dose conflicts and lab trends, and answers questions about it.
 """
 
+import asyncio
 import logging
 from contextlib import asynccontextmanager
 
@@ -14,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from app import storage
 from app.config import CORS_ORIGINS
 from app.db.migrate import run_migrations
+from app.ingest.pipeline import resume_stranded
 from app.rag.embedder import build_index
 from app.routers.document_router import router as document_router
 from app.routers.finding_router import router as finding_router
@@ -37,9 +39,17 @@ async def lifespan(app: FastAPI):
         storage.ensure_bucket()
     except Exception:  # noqa: BLE001 - storage being down must not stop the API
         logger.exception("could not prepare the storage bucket; uploads may fail")
+    # Finish anything a restart interrupted. Deliberately a task rather than an
+    # await: a resumed document can take half a minute, and the API must be
+    # answering requests long before that. Held in a local so it is not
+    # garbage-collected mid-flight, which is a real hazard with bare tasks.
+    resuming = asyncio.create_task(resume_stranded())
+
     # Build the vector index once at startup instead of on the first request
     # build_index()
     yield
+
+    resuming.cancel()
 
 
 app = FastAPI(
