@@ -1,61 +1,60 @@
-# Agentic RAG (LangGraph) — FastAPI-ready
+# CrossCheck
 
-Modular version of the LangGraph agentic RAG tutorial, split into copy-paste-able files.
+An AI medical report and prescription cross-checker. It reads a patient's own
+documents — prescriptions, lab reports, discharge summaries, typed or
+handwritten, in any language — merges them into one dated timeline, and
+cross-checks that timeline for drug interactions, duplicate therapy,
+conflicting doses and lab trends that no single document would reveal.
 
-## Structure
+**Data decides, AI explains.** A language model never determines whether a
+safety finding exists. That verdict comes from a drug database; the model's only
+job is to say what it means in plain English.
 
-```
-app/
-├── main.py                 # Example FastAPI entrypoint (lifespan builds index)
-├── rag/
-│   ├── config.py           # Models, chunk sizes, source URLs (env-overridable)
-│   ├── loader.py           # Fetch web pages -> Documents
-│   ├── chunker.py          # RecursiveCharacterTextSplitter chunking
-│   ├── embedder.py         # Vector store + cached retriever (build/reset index)
-│   ├── search.py           # @tool retriever the agent calls
-│   ├── nodes.py            # generate_query_or_respond / grade / rewrite / answer
-│   └── graph.py            # StateGraph assembly, exports `graph`
-└── routers/
-    └── rag_router.py       # POST /rag/ask
-```
+> Informational cross-check — not a medical diagnosis.
 
-## Flow
+## Stack
 
-`generate_query_or_respond` → (tool call?) → `retrieve` → `grade_documents` →
-`generate_answer` (relevant) or `rewrite_question` → loop back.
+FastAPI · SQLAlchemy 2.0 · PostgreSQL (Supabase) · LangChain + LangGraph ·
+OpenAI GPT-5.4 · React 19 + Vite · Clerk
+
+Reference data: DDInter 2.0 (215,382 interaction rules), RxNorm, WHO ATC, openFDA.
 
 ## Run
 
 ```bash
 pip install -r requirements.txt
-export OPENAI_API_KEY=sk-...
-uvicorn app.main:app --reload
+cp .env.example .env            # then fill in the four required keys
+uvicorn app.main:app --reload   # migrations run at startup
 ```
 
 ```bash
-curl -X POST http://localhost:8000/rag/ask \
-  -H "Content-Type: application/json" \
-  -d '{"question": "What does Lilian Weng say about types of reward hacking?"}'
+cd frontend && npm install && npm run dev
 ```
 
-## Adding to an existing FastAPI server
+Required in `.env`: `OPENAI_API_KEY`, `DATABASE_URL`, `CLERK_ISSUER`,
+`CLERK_AUTHORIZED_PARTIES`. Optional: `SUPABASE_URL` + `SUPABASE_SERVICE_KEY`
+(object storage — without them uploads go to the local disk, which a deploy
+wipes), `TAVILY_API_KEY`, `LANGSMITH_API_KEY`.
 
-1. Copy `app/rag/` and `app/routers/rag_router.py` into your project.
-2. In your existing `main.py`:
-   ```python
-   from app.rag.embedder import build_index
-   from app.routers.rag_router import router as rag_router
+## Layout
 
-   app.include_router(rag_router)
-   # call build_index() in your startup/lifespan
-   ```
-3. Adjust the import paths if your package isn't named `app`.
+```
+app/
+├── ingest/     upload → parse → transcribe → extract → normalise → timeline
+├── checks/     interactions, duplicates, allergies, doses, lab trends
+├── rag/        the question-answering agent and its 11 tools
+├── routers/    the HTTP API
+└── db/         models and forward-only SQL migrations
+frontend/       React app — timeline, interactions, trends, chat, review
+evals/          test cases generated from the database, graded deterministically
+docs/           technical summary
+```
 
-## Customizing
+## Evals
 
-- Change `SOURCE_URLS`, chunk sizes, and models in `config.py` (or via env vars).
-- Swap `InMemoryVectorStore` in `embedder.py` for Chroma/Pinecone/pgvector for
-  persistence — only that file needs to change.
-- Rename `retrieve_blog_posts` in `search.py` and update its docstring so the
-  agent knows what your corpus contains (the docstring is the tool description
-  the LLM sees — it matters).
+```bash
+python -m evals.run             # add --kind safety to run one family
+```
+
+Cases are generated from the database, so they cannot drift from the record, and
+every grader is deterministic — never one model judging another.
