@@ -19,6 +19,19 @@ OpenAI GPT-5.4 · React 19 + Vite · Clerk
 
 Reference data: DDInter 2.0 (215,382 interaction rules), RxNorm, WHO ATC, openFDA.
 
+## Architecture
+
+<img width="572" height="425" alt="image" src="https://github.com/user-attachments/assets/f89a3712-8d97-405b-80ca-cdbb6ee02ca6" />
+
+## Langgraph Diagram
+
+<img width="327" height="461" alt="image" src="https://github.com/user-attachments/assets/380c0206-2743-4a98-9b1f-f7f988768b81" />
+
+## Langsmith Traces
+
+<img width="622" height="447" alt="image" src="https://github.com/user-attachments/assets/5f7be41d-4fa1-4373-87ca-f93528fd10ee" />
+
+
 ## Run
 
 ```bash
