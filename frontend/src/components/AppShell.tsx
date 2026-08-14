@@ -10,6 +10,12 @@
  * finding can be linked to — which for a tool people will be shown by someone
  * else, or will come back to, is worth more than the state variable it saves.
  * The active styling is identical either way.
+ *
+ * The sidebar collapses to an icon rail rather than disappearing. A document
+ * page or a wide results table wants the room, but the review badge is a count
+ * of work waiting on the reader, and a frame that hides it entirely would hide
+ * the one thing on this screen asking for attention. Collapsed, the badge
+ * becomes a dot on the icon — smaller, still there.
  */
 
 import { NavLink, Outlet } from "react-router-dom";
@@ -116,6 +122,33 @@ function NavIcon({ children, size = 17 }: { children: ReactNode; size?: number }
   );
 }
 
+const OPEN_WIDTH = 238;
+const RAIL_WIDTH = 58;
+
+// Remembered across navigations and refreshes. Someone who collapses the
+// sidebar to read a wide table does not want it back on the next click.
+const COLLAPSE_KEY = "cc.sidebar.collapsed";
+
+function storedCollapsed(): boolean {
+  try {
+    return window.localStorage.getItem(COLLAPSE_KEY) === "1";
+  } catch {
+    // Private browsing, or storage disabled. The sidebar opening is a fine
+    // default and not worth failing the whole shell over.
+    return false;
+  }
+}
+
+/** The chevron that opens and closes the rail. */
+function CollapseIcon({ collapsed }: { collapsed: boolean }) {
+  return (
+    <NavIcon size={17}>
+      <path d={collapsed ? "m9 18 6-6-6-6" : "m15 18-6-6 6-6"} />
+      <line x1="20" y1="4" x2="20" y2="20" />
+    </NavIcon>
+  );
+}
+
 /** Up to two letters, from the first and last word of the name. */
 function initialsOf(name: string | null | undefined): string {
   const words = (name ?? "").trim().split(/\s+/).filter(Boolean);
@@ -155,16 +188,30 @@ export default function AppShell() {
     (documents ?? []).map((doc) => doc.provider).filter((name): name is string => Boolean(name)),
   ).size;
 
+  const [collapsed, setCollapsed] = useState(storedCollapsed);
+  const toggle = () => {
+    setCollapsed((was) => {
+      const next = !was;
+      try {
+        window.localStorage.setItem(COLLAPSE_KEY, next ? "1" : "0");
+      } catch {
+        // Not being able to remember the choice is not a reason to refuse it.
+      }
+      return next;
+    });
+  };
+
   return (
     <div style={{ flex: 1, display: "flex", minHeight: 0 }}>
       <aside
         style={{
-          width: 238,
+          width: collapsed ? RAIL_WIDTH : OPEN_WIDTH,
           flex: "none",
           borderRight: "1px solid var(--color-divider)",
           display: "flex",
           flexDirection: "column",
           background: "var(--color-surface)",
+          transition: "width .16s ease",
         }}
       >
         <div
@@ -172,38 +219,105 @@ export default function AppShell() {
             display: "flex",
             alignItems: "center",
             gap: 10,
-            padding: "16px 16px 14px",
+            padding: collapsed ? "16px 0 14px" : "16px 16px 14px",
+            justifyContent: collapsed ? "center" : undefined,
             borderBottom: "1px solid var(--color-divider)",
           }}
         >
-          <LogoMark size={28} />
-          <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 18 }}>
-            CrossCheck
-          </div>
+          {!collapsed && (
+            <>
+              <LogoMark size={28} />
+              <div style={{ fontFamily: "var(--font-heading)", fontWeight: 600, fontSize: 18 }}>
+                CrossCheck
+              </div>
+            </>
+          )}
+          <button
+            type="button"
+            className="cc-signout"
+            onClick={toggle}
+            title={collapsed ? "Show the menu" : "Hide the menu"}
+            aria-label={collapsed ? "Show the menu" : "Hide the menu"}
+            aria-expanded={!collapsed}
+            style={{
+              marginLeft: collapsed ? 0 : "auto",
+              flex: "none",
+              display: "grid",
+              placeItems: "center",
+              width: 30,
+              height: 30,
+              background: "none",
+              border: "1px solid transparent",
+              cursor: "pointer",
+              color: "rgba(29,31,32,.5)",
+            }}
+          >
+            <CollapseIcon collapsed={collapsed} />
+          </button>
         </div>
 
-        <nav style={{ padding: "10px 8px", display: "flex", flexDirection: "column", gap: 2 }}>
+        <nav
+          style={{
+            padding: collapsed ? "10px 6px" : "10px 8px",
+            display: "flex",
+            flexDirection: "column",
+            gap: 2,
+          }}
+        >
           {NAV.map((item) => (
-            <NavLink key={item.to} to={item.to} className="cc-nav" style={navStyle}>
-              <NavIcon>{item.icon}</NavIcon>
-              <span style={{ flex: 1, textAlign: "left" }}>{item.label}</span>
-              {/* The only badge in the sidebar, and it is a real count of work
-                  waiting — red when any of it is high risk. */}
-              {item.to === "/app/review" && reviewCount > 0 && (
-                <span
-                  style={{
-                    fontFamily: "var(--font-heading)",
-                    fontWeight: 600,
-                    fontSize: 11,
-                    lineHeight: 1,
-                    padding: "3px 7px",
-                    background: highRisk > 0 ? "var(--color-danger)" : "var(--color-accent)",
-                    color: "#fff",
-                    flex: "none",
-                  }}
-                >
-                  {reviewCount}
-                </span>
+            <NavLink
+              key={item.to}
+              to={item.to}
+              className="cc-nav"
+              title={collapsed ? item.label : undefined}
+              style={navStyle(collapsed)}
+            >
+              <span style={{ position: "relative", display: "flex", flex: "none" }}>
+                <NavIcon>{item.icon}</NavIcon>
+                {/* Collapsed, the count has nowhere to sit, so it becomes a dot
+                    on the icon. Shrinking it is fine; removing it is not — it
+                    is the only thing in this frame asking for attention. */}
+                {collapsed && item.to === "/app/review" && reviewCount > 0 && (
+                  <span
+                    aria-hidden
+                    style={{
+                      position: "absolute",
+                      top: -3,
+                      right: -4,
+                      width: 7,
+                      height: 7,
+                      borderRadius: "50%",
+                      background:
+                        highRisk > 0 ? "var(--color-danger)" : "var(--color-accent)",
+                    }}
+                  />
+                )}
+              </span>
+              {!collapsed && (
+                <>
+                  <span style={{ flex: 1, textAlign: "left" }}>{item.label}</span>
+                  {/* The only badge in the sidebar, and it is a real count of
+                      work waiting — red when any of it is high risk. */}
+                  {item.to === "/app/review" && reviewCount > 0 && (
+                    <span
+                      style={{
+                        fontFamily: "var(--font-heading)",
+                        fontWeight: 600,
+                        fontSize: 11,
+                        lineHeight: 1,
+                        padding: "3px 7px",
+                        background: highRisk > 0 ? "var(--color-danger)" : "var(--color-accent)",
+                        color: "#fff",
+                        flex: "none",
+                      }}
+                    >
+                      {reviewCount}
+                    </span>
+                  )}
+                </>
+              )}
+              {collapsed && item.to === "/app/review" && reviewCount > 0 && (
+                <span className="sr-only">{reviewCount} items need review</span>
               )}
             </NavLink>
           ))}
@@ -212,11 +326,19 @@ export default function AppShell() {
         <div
           style={{
             marginTop: "auto",
-            padding: 14,
+            padding: collapsed ? "12px 6px" : 14,
             borderTop: "1px solid var(--color-divider)",
           }}
         >
-          <div style={{ display: "flex", alignItems: "center", gap: 10, marginBottom: 12 }}>
+          <div
+            style={{
+              display: "flex",
+              alignItems: "center",
+              gap: 10,
+              marginBottom: 12,
+              flexDirection: collapsed ? "column" : "row",
+            }}
+          >
             <div
               style={{
                 width: 34,
@@ -233,6 +355,7 @@ export default function AppShell() {
             >
               {initialsOf(patientName)}
             </div>
+            {!collapsed && (
             <div style={{ minWidth: 0 }}>
               <div
                 style={{
@@ -257,6 +380,7 @@ export default function AppShell() {
                         : "")}
               </div>
             </div>
+            )}
 
             {/* No confirmation step. Signing out destroys nothing — the
                 documents and everything read from them stay on the account —
@@ -269,7 +393,7 @@ export default function AppShell() {
               aria-label="Sign out"
               onClick={() => void signOut()}
               style={{
-                marginLeft: "auto",
+                marginLeft: collapsed ? 0 : "auto",
                 flex: "none",
                 display: "grid",
                 placeItems: "center",
@@ -289,12 +413,17 @@ export default function AppShell() {
             </button>
           </div>
 
-          <NavLink to="/app/documents" className="btn btn-secondary btn-block" style={{ marginTop: 0 }}>
+          <NavLink
+            to="/app/documents"
+            className="btn btn-secondary btn-block"
+            style={{ marginTop: 0, padding: collapsed ? "8px 0" : undefined }}
+            title={collapsed ? "New analysis" : undefined}
+          >
             <NavIcon size={15}>
               <path d="M5 12h14" />
               <path d="M12 5v14" />
             </NavIcon>
-            New analysis
+            {!collapsed && "New analysis"}
           </NavLink>
         </div>
       </aside>
@@ -310,12 +439,13 @@ export default function AppShell() {
 
 /** The active state changes four properties at once, which is why this is a
  *  function of `isActive` rather than a class. */
-function navStyle({ isActive }: { isActive: boolean }): CSSProperties {
-  return {
+function navStyle(collapsed: boolean) {
+  return ({ isActive }: { isActive: boolean }): CSSProperties => ({
     display: "flex",
     alignItems: "center",
-    gap: 11,
-    padding: "9px 11px",
+    gap: collapsed ? 0 : 11,
+    justifyContent: collapsed ? "center" : undefined,
+    padding: collapsed ? "10px 0" : "9px 11px",
     border: "none",
     background: isActive ? "#eef6ff" : "transparent",
     color: isActive ? "#2c455d" : "#1d1f20",
@@ -327,6 +457,6 @@ function navStyle({ isActive }: { isActive: boolean }): CSSProperties {
     borderLeft: `2px solid ${isActive ? "#5980a6" : "transparent"}`,
     fontWeight: isActive ? 600 : 400,
     textDecoration: "none",
-  };
+  });
 }
 

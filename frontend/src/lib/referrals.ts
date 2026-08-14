@@ -115,7 +115,6 @@ export const PROVIDER_PATH: Record<ProviderId, string> = {
 };
 
 export const AVAILABILITY = ["This week", "Evenings", "Weekends", "As soon as possible"];
-export const RADII = [5, 10, 25];
 
 export interface ProviderHealth {
   name: string;

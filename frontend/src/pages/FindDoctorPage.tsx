@@ -36,7 +36,6 @@ import type { Finding } from "../lib/findings";
 import {
   AVAILABILITY,
   PROVIDERS,
-  RADII,
   distanceLabel,
   getSpecialties,
   hoursToday,
@@ -389,14 +388,20 @@ function LocationPicker({
   );
 }
 
-/** The two questions, and how far to look. */
+/**
+ * The two questions.
+ *
+ * How far to look is deliberately not one of them. The search widens on its
+ * own — 5, 10, 25 km and onward until it finds someone — and reports every
+ * rung it tried, so asking the reader to choose a radius up front only lets
+ * them pick a wrong one. Someone in Vavuniya does not know that the nearest
+ * cardiologist is 31 km away; that is the search's job to discover and say.
+ */
 function Questions({
   location,
   setLocation,
   availability,
   setAvailability,
-  radius,
-  setRadius,
   onSearch,
   busy,
   ready,
@@ -405,8 +410,6 @@ function Questions({
   setLocation: (v: string) => void;
   availability: string;
   setAvailability: (v: string) => void;
-  radius: number;
-  setRadius: (v: number) => void;
   onSearch: () => void;
   busy: boolean;
   ready: boolean;
@@ -444,7 +447,9 @@ function Questions({
       <div style={{ height: 1, background: "var(--color-divider)" }} />
 
       <div style={{ display: "flex", alignItems: "center", gap: 12, flexWrap: "wrap" }}>
-        
+        <span style={{ fontSize: 11.5, color: FAINT, flex: 1, minWidth: 200 }}>
+          Searches nearby first and widens until it finds someone.
+        </span>
         <button
           className="btn btn-primary"
           onClick={onSearch}
@@ -843,7 +848,6 @@ export default function FindDoctorPage() {
   const [chosen, setChosen] = useState<Option | null>(null);
   const [location, setLocation] = useState("");
   const [availability, setAvailability] = useState(AVAILABILITY[0]);
-  const [radius, setRadius] = useState(10);
   const [tab, setTab] = useState<ProviderId>("echannelling");
 
   const [results, setResults] = useState<Partial<Record<ProviderId, ReferralSearch>>>({});
@@ -930,7 +934,6 @@ export default function FindDoctorPage() {
           location,
           specialty: chosen.label,
           availability,
-          radius_km: radius,
         },
         token,
       )
@@ -949,7 +952,7 @@ export default function FindDoctorPage() {
           setLoading((prev) => ({ ...prev, [provider.id]: false }));
         });
     }
-  }, [location, subject, chosen, availability, radius, getToken]);
+  }, [location, subject, chosen, availability, getToken]);
 
   const count = (id: ProviderId) => results[id]?.results.length;
 
@@ -1101,8 +1104,6 @@ export default function FindDoctorPage() {
         setLocation={setLocation}
         availability={availability}
         setAvailability={setAvailability}
-        radius={radius}
-        setRadius={setRadius}
         onSearch={search}
         busy={Object.values(loading).some(Boolean)}
         ready={Boolean(chosen)}
