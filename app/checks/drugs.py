@@ -24,6 +24,7 @@ from app.checks.base import (
     atc_families,
     checkable,
     overlaps,
+    regimen,
 )
 from app.db.models import Drug, InteractionRule, TimelineEvent
 
@@ -65,11 +66,11 @@ def check_interactions(db: Session, events: list[TimelineEvent]) -> list[Candida
                 title=f"{name_a.title()} and {name_b.title()} may interact ({graded})",
                 evidence={
                     "drugs": [name_a, name_b],
+                    "regimens": [regimen(first), regimen(second)],
                     "rxcuis": list(key),
                     "ddinter_severity": rule.severity,
                     "source_names": [rule.name_a, rule.name_b],
                     "source": "DDInter 2.0",
-                    "dates": [str(first.event_date), str(second.event_date)],
                     "overlap_certain": certain,
                     "assumption": assumption_note(certain),
                 },
@@ -116,11 +117,11 @@ def check_duplicates(db: Session, events: list[TimelineEvent]) -> list[Candidate
                 title=f"{name_a.title()} and {name_b.title()} are both {label.lower()}",
                 evidence={
                     "drugs": [name_a, name_b],
+                    "regimens": [regimen(first), regimen(second)],
                     "rxcuis": [first.rxcui, second.rxcui],
                     "shared_atc": sorted(shared),
                     "family_name": label,
                     "atc_codes": [first.atc_codes, second.atc_codes],
-                    "dates": [str(first.event_date), str(second.event_date)],
                     "overlap_certain": certain,
                     "assumption": assumption_note(certain),
                 },
@@ -196,13 +197,16 @@ def check_allergies(db: Session, events: list[TimelineEvent]) -> list[Candidate]
                     evidence={
                         "allergy": substance,
                         "allergy_reaction": allergy.reaction,
+                        "allergy_recorded": str(allergy.event_date)
+                        if allergy.event_date
+                        else None,
                         "drug": name,
+                        "regimen": regimen(medicine),
                         "rxcui": medicine.rxcui,
                         "shared_atc": sorted(shared),
                         "matched_by": "same drug family"
                         if medicine.rxcui != rxcui
                         else "same ingredient",
-                        "dates": [str(allergy.event_date), str(medicine.event_date)],
                     },
                     event_ids=[allergy.id, medicine.id],
                     visit_ids=list({allergy.visit_id, medicine.visit_id}),
@@ -318,6 +322,7 @@ def check_dosage_conflicts(db: Session, events: list[TimelineEvent]) -> list[Can
                 title=f"{name.title()} appears at two different strengths",
                 evidence={
                     "drug": name,
+                    "regimens": [regimen(first), regimen(second)],
                     "rxcui": first.rxcui,
                     "strengths": [
                         f"{low[0]:g} {first.strength_unit} on {low[1]}",

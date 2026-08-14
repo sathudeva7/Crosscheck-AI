@@ -129,6 +129,24 @@ DRUG_CACHE_PATH = Path(os.getenv("DRUG_CACHE_PATH", PROJECT_ROOT / "data" / "dru
 # established from the drug database. Never decides whether a finding exists.
 EXPLAIN_MODEL = os.getenv("EXPLAIN_MODEL", EXTRACT_MODEL)
 
+# Reads a whole lab report and decides which kinds of doctor usually review one
+# like it. Unlike EXPLAIN_MODEL this one does make the choice — but only from
+# the specialties the live directories actually list, which it reaches through
+# a search tool. See app/referral/report.py.
+REPORT_MODEL = os.getenv("REPORT_MODEL", EXTRACT_MODEL)
+
+# How many times the agent may search the directories before answering. Enough
+# to try a clinical term, see what came back and refine it; low enough that a
+# model looping on an unanswerable question still finishes an upload.
+REPORT_MAX_SEARCHES = int(os.getenv("REPORT_MAX_SEARCHES", 6))
+
+# Turn off to ingest lab reports without asking a model who should read them.
+ENABLE_REPORT_RECOMMENDATION = os.getenv("ENABLE_REPORT_RECOMMENDATION", "1") not in (
+    "0",
+    "false",
+    "False",
+)
+
 # Turn off to run ingestion with no network and no drug identification.
 ENABLE_DRUG_LOOKUP = os.getenv("ENABLE_DRUG_LOOKUP", "1") not in ("0", "false", "False")
 
@@ -140,6 +158,73 @@ ENABLE_DRUG_LOOKUP = os.getenv("ENABLE_DRUG_LOOKUP", "1") not in ("0", "false", 
 OPENFDA_BASE_URL = os.getenv("OPENFDA_BASE_URL", "https://api.fda.gov")
 OPENFDA_TIMEOUT = float(os.getenv("OPENFDA_TIMEOUT", 15))
 ENABLE_OPENFDA = os.getenv("ENABLE_OPENFDA", "1") not in ("0", "false", "False")
+
+# --- finding a doctor --------------------------------------------------------
+#
+# Two directories answering two different questions, and neither alone is an
+# answer. eChannelling knows *people* — which cardiologist channels where — and
+# nothing about where that is on a map. Google knows *places* — the address, the
+# phone, how far away it is — and in Sri Lanka lists no individual doctors at
+# all. The feature is the join.
+#
+# Nothing either returns is ever stored. Google's terms require it (names,
+# ratings and phone numbers must be fetched live, only a place_id may be kept),
+# and it is the right shape anyway: a clinic that closed last week should
+# disappear from the results, not persist in a table of ours.
+
+# Google Maps Platform. One key, several APIs: Geocoding turns 'Kandy' into
+# coordinates, Places finds the clinic and its details. Absent, the whole
+# feature degrades to eChannelling names with no distance rather than failing.
+GOOGLE_MAPS_API_KEY = os.getenv("GOOGLE_MAPS_API_KEY")
+GOOGLE_MAPS_TIMEOUT = float(os.getenv("GOOGLE_MAPS_TIMEOUT", 20))
+
+# eChannelling's public API, behind Mobitel's IBM API Connect gateway.
+ECHANNELLING_BASE_URL = os.getenv(
+    "ECHANNELLING_BASE_URL",
+    "https://echannelling-apigw.mobitel.lk/echannelling/ext/echannelling/ech-api/ech",
+)
+ECHANNELLING_TIMEOUT = float(os.getenv("ECHANNELLING_TIMEOUT", 40))
+
+# The gateway wants an x-ibm-client-id. Theirs is published in their own web
+# bundle, and `providers/echannelling.py` reads the current one from there at
+# runtime rather than pinning a copy — pinned, it breaks silently the day they
+# rotate it. Set this only to override with a client id of your own.
+ECHANNELLING_CLIENT_ID = os.getenv("ECHANNELLING_CLIENT_ID")
+ECHANNELLING_SITE_URL = os.getenv("ECHANNELLING_SITE_URL", "https://www.echannelling.com")
+
+# Either directory can be switched off. Each degrades to the other, and with
+# both off the endpoint reports that no directory is available rather than
+# returning an empty list that reads as 'there are no doctors near you'.
+# Doc990 (doc.lk), Dialog's channelling network — the other half of Sri Lankan
+# private channelling. Server-rendered HTML, no key, no gateway. Worth asking
+# separately rather than instead: eChannelling lists no cardiologist within
+# 50 km of Vavuniya and Doc990 has one in the town, because the two networks
+# sign different hospitals.
+DOC990_BASE_URL = os.getenv("DOC990_BASE_URL", "https://www.doc.lk")
+DOC990_TIMEOUT = float(os.getenv("DOC990_TIMEOUT", 60))
+
+# How many hospitals near the patient to ask Doc990 about. Its search cannot
+# filter by location, so each one costs a request and a 3 MB page; six covers a
+# city without turning one search into a crawl.
+DOC990_MAX_HOSPITALS = int(os.getenv("DOC990_MAX_HOSPITALS", 6))
+
+# Any directory can be switched off. Each degrades independently, and with all
+# of them off the endpoints report that no directory is available rather than
+# returning an empty list that reads as 'there are no doctors near you'.
+ENABLE_ECHANNELLING = os.getenv("ENABLE_ECHANNELLING", "1") not in ("0", "false", "False")
+ENABLE_DOC990 = os.getenv("ENABLE_DOC990", "1") not in ("0", "false", "False")
+ENABLE_PLACES = os.getenv("ENABLE_PLACES", "1") not in ("0", "false", "False")
+
+# The widening ladder. A search that finds nothing nearby is not finished: for
+# a patient in Jaffna needing an oncologist the nearest is 245 km away, and
+# 'no results' would be both true and useless. Each radius is tried in turn
+# until enough are found, and the response reports every rung tried so the
+# interface can say how far it looked.
+REFERRAL_RADII_KM = [
+    int(r) for r in os.getenv("REFERRAL_RADII_KM", "5,10,25,50,150,400").split(",") if r.strip()
+]
+REFERRAL_ENOUGH = int(os.getenv("REFERRAL_ENOUGH", 3))
+REFERRAL_MAX_RESULTS = int(os.getenv("REFERRAL_MAX_RESULTS", 20))
 
 # --- answering questions -------------------------------------------------------
 

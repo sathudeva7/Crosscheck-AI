@@ -125,6 +125,16 @@ def _coverage(db: Session, patient_id: UUID) -> CheckCoverage:
 
 @router.post("/recheck", response_model=FindingListRead)
 async def recheck(
+    rewrite: bool = Query(
+        False,
+        description=(
+            "Also rewrite explanations that already exist. Off by default: a "
+            "warning is worded once and kept, so that the same finding does not "
+            "read differently each time the page is opened. Turn it on after the "
+            "evidence findings carry has changed, since text written against the "
+            "old shape is never revisited otherwise."
+        ),
+    ),
     db: Session = Depends(get_db),
     patient: Patient = Depends(current_patient),
 ) -> FindingListRead:
@@ -134,7 +144,7 @@ async def recheck(
     correcting a drug name by hand, since identifying a medicine is exactly
     what lets it be checked at all.
     """
-    await run_checks(db, patient.id)
+    await run_checks(db, patient.id, rewrite_explanations=rewrite)
     # Passed explicitly: called as a plain function, the Query(...) defaults
     # would arrive as Query objects rather than values.
     return list_findings(db=db, patient=patient, include_dismissed=False, severity=None)

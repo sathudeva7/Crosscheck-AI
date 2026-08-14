@@ -298,13 +298,20 @@ _RANGE = re.compile(
     r"^\s*(-?\d+(?:[.,]\d+)?)\s*(?:-|–|—|to)\s*(-?\d+(?:[.,]\d+)?)\s*$", re.IGNORECASE
 )
 
+# Analyser software prints the range inside brackets — '[0.90-1.30]', '[>60.0]'.
+# Both patterns below are anchored, so without stripping these the bracket alone
+# made the range unreadable. That is not a cosmetic failure: a result with no
+# bounds cannot be called high or low, so it can never raise a finding and never
+# reaches the referral routing. On the reports here it cost 69 of 70 readings.
+_WRAPPERS = "[](){}"
+
 
 def parse_range(raw: str | None) -> ReferenceRange:
-    """Read '0.7 - 1.3' or '> 90' into bounds we can compare against."""
+    """Read '0.7 - 1.3', '[0.90-1.30]' or '> 90' into bounds we can compare against."""
     if not raw or not str(raw).strip():
         return ReferenceRange(raw=raw or "", reason="no range given")
 
-    text = unicodedata.normalize("NFKC", str(raw)).strip()
+    text = unicodedata.normalize("NFKC", str(raw)).strip().strip(_WRAPPERS).strip()
 
     match = _RANGE.match(text)
     if match:

@@ -15,6 +15,7 @@ warning still appears — it just reads more flatly. A safety warning that
 depends on an API call succeeding is not a safety warning.
 """
 
+import json
 import logging
 
 from langchain.chat_models import init_chat_model
@@ -31,8 +32,10 @@ The finding has already been established from a drug database. Your job is only
 to put it into words. Do not question it, and do not add findings of your own.
 
 Write two or three short sentences:
-1. What has been noticed, in everyday words.
-2. Why it matters — what the drugs do, or what the value means.
+1. What has been noticed, in this patient's own words and numbers — the doses,
+   the dates, the readings the evidence gives you.
+2. Why it matters, using only what is in the evidence: how the pair was graded,
+   the family two medicines share, how far a reading sits outside its range.
 3. What to do: speak to a doctor or pharmacist before changing anything.
 
 Rules:
@@ -40,6 +43,21 @@ Rules:
 - Never diagnose. Describe what was found, not what is wrong with them.
 - Do not state anything the evidence does not contain. If it says the overlap
   was assumed, say that the assumption was made.
+- Do not explain how a medicine works in the body, or what an interaction does
+  physiologically. The record does not say, and filling it in from your own
+  knowledge is how this stops being about the patient reading it. 'These are
+  graded a major interaction' is the evidence; 'warfarin thins the blood and
+  ibuprofen irritates the stomach lining' is not.
+- Use the regimens you are given. Name the dose and the date. A sentence that
+  would fit any patient taking these drugs tells this one nothing they could
+  not have read on the packet.
+- Write dates the way a person says them: '12 March 2024', not '2024-03-12'.
+  The evidence is stored for a machine; this is being read by someone worried.
+- Never print our own machinery: not the severity word ('danger', 'warning'),
+  not an ATC or RxCUI code, not a field name. Say 'the same family of
+  antibiotics', not 'shared family code J01C'. The grade a source gives an
+  interaction — 'major' from DDInter — is a fact about the pair and may be
+  used; 'danger' is our internal colour for it and may not.
 - No jargon unless you immediately explain it. Say 'a medicine that slows the
   heart' rather than 'a beta blocker' alone.
 - Be calm. This is information, not an alarm.
@@ -106,9 +124,30 @@ def template_for(candidate: Candidate) -> str:
     return f"{text} {assumption}" if assumption else text
 
 
+def _facts(evidence: dict) -> str:
+    """The evidence as lines the model can read.
+
+    Nested values go out as JSON rather than as Python's own repr: a regimen
+    is a small object, and `{'drug': 'warfarin'}` with its single quotes is one
+    more thing to be misread. Empty values are dropped — 'assumption: None' is
+    a line that says nothing and invites the model to explain the nothing.
+    """
+    lines = []
+    for key, value in (evidence or {}).items():
+        if value is None or value == [] or value == {}:
+            continue
+        rendered = (
+            json.dumps(value, ensure_ascii=False)
+            if isinstance(value, (dict, list))
+            else value
+        )
+        lines.append(f"- {key}: {rendered}")
+    return "\n".join(lines)
+
+
 async def explain(candidate: Candidate) -> tuple[str, str]:
     """Write the explanation for one finding. Returns (text, source)."""
-    facts = "\n".join(f"- {key}: {value}" for key, value in (candidate.evidence or {}).items())
+    facts = _facts(candidate.evidence)
     prompt = (
         f"Finding: {candidate.title}\n"
         f"Type: {candidate.finding_type}\n"

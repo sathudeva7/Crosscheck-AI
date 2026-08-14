@@ -207,6 +207,11 @@ class Document(Base):
     processing_completed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     extraction_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
 
+    # Which kinds of doctor usually review a report like this. Decided once,
+    # at upload, and frozen with the document — see 009. Holds specialty names
+    # only; no doctor, clinic or appointment is ever written down.
+    recommendation_json: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )

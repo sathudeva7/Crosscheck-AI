@@ -34,6 +34,7 @@ import TimelinePage from "./pages/TimelinePage";
 import TrendsPage from "./pages/TrendsPage";
 import ChatPage from "./pages/ChatPage";
 import InteractionsPage from "./pages/InteractionsPage";
+import FindDoctorPage from "./pages/FindDoctorPage";
 import UploadPage from "./pages/UploadPage";
 import { SSO_CALLBACK_PATH } from "./lib/useGoogle";
 
@@ -165,6 +166,7 @@ export default function App() {
           <Route path="timeline" element={<TimelinePage />} />
           <Route path="review" element={<ReviewPage />} />
           <Route path="interactions" element={<InteractionsPage />} />
+            <Route path="find-doctor" element={<FindDoctorPage />} />
           <Route path="trends" element={<TrendsPage />} />
           <Route path="chat" element={<ChatPage />} />
           <Route path="documents" element={<UploadPage />} />

@@ -74,8 +74,19 @@ def _now() -> datetime:
     return datetime.now(UTC)
 
 
-async def run_checks(db: Session, patient_id: UUID, explain_new: bool = True) -> CheckResult:
-    """Check everything, write the findings, colour the timeline."""
+async def run_checks(
+    db: Session,
+    patient_id: UUID,
+    explain_new: bool = True,
+    rewrite_explanations: bool = False,
+) -> CheckResult:
+    """Check everything, write the findings, colour the timeline.
+
+    `rewrite_explanations` reworks the wording of findings that already have
+    some. Off by default and deliberately so — see `_write_explanations` — but
+    needed after the evidence a finding carries has changed shape, since the
+    text was written against the old one and nothing else would ever replace it.
+    """
     events = list(
         db.scalars(select(TimelineEvent).where(TimelineEvent.patient_id == patient_id))
     )
@@ -95,7 +106,7 @@ async def run_checks(db: Session, patient_id: UUID, explain_new: bool = True) ->
 
     result = _write(db, patient_id, unique)
     if explain_new:
-        await _write_explanations(db, patient_id, unique)
+        await _write_explanations(db, patient_id, unique, rewrite=rewrite_explanations)
 
     colour_visits(db, patient_id)
     db.commit()
@@ -166,20 +177,27 @@ def _write(db: Session, patient_id: UUID, candidates: dict[str, Candidate]) -> C
 
 
 async def _write_explanations(
-    db: Session, patient_id: UUID, candidates: dict[str, Candidate]
+    db: Session,
+    patient_id: UUID,
+    candidates: dict[str, Candidate],
+    rewrite: bool = False,
 ) -> None:
     """Fill in the wording for findings that do not have any yet.
 
-    Only new ones. An explanation is written once and kept: rewording a
-    warning on every upload would be both wasteful and unsettling to read.
+    Only new ones by default. An explanation is written once and kept:
+    rewording a warning on every upload would be both wasteful and unsettling
+    to read — the same danger, phrased differently each time you open the page,
+    reads as a system changing its mind.
+
+    `rewrite` takes in the ones already written too. It is for the case that
+    rule cannot cover: when the evidence a finding carries has gained a field,
+    every existing explanation was written without it and will never be
+    revisited otherwise.
     """
-    pending = list(
-        db.scalars(
-            select(Finding).where(
-                Finding.patient_id == patient_id, Finding.detail.is_(None)
-            )
-        )
-    )
+    query = select(Finding).where(Finding.patient_id == patient_id)
+    if not rewrite:
+        query = query.where(Finding.detail.is_(None))
+    pending = list(db.scalars(query))
     for finding in pending:
         candidate = candidates.get(finding.key)
         if candidate is None:

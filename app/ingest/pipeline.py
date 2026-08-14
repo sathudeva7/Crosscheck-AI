@@ -30,6 +30,8 @@ from app.ingest.ground import ground_extraction, summarise
 from app.ingest.normalize import ParsedDate, document_date, normalize_extraction
 from app.ingest.review import review_group
 from app.checks.engine import run_checks
+from app.config import ENABLE_REPORT_RECOMMENDATION
+from app.referral import report as report_recommendation
 from app.ingest.timeline import rebuild_document
 from app.ingest.review import summarise as review_summary
 from app.ingest.pages import DocumentError, open_document
@@ -453,6 +455,26 @@ async def process_document(
                 processing_completed_at=_now(),
             )
             return
+
+        # Who should read this report, decided once, here. A lab report is the
+        # one document a patient holds without knowing what to do with it, and
+        # the answer costs a model call and several seconds — worth paying
+        # while they are already waiting for extraction, not on every later
+        # open. Only for lab reports: a prescription came from a doctor who has
+        # already decided something.
+        if document.doc_type == "lab_report" and ENABLE_REPORT_RECOMMENDATION:
+            try:
+                found = report_recommendation.recommend(db, document)
+                document.recommendation_json = found.to_json()
+                db.commit()
+                logger.info(
+                    "recommendation for %s: %s",
+                    document.id,
+                    ", ".join(s.specialty for s in found.specialties) or found.error,
+                )
+            except Exception:  # never lose a read document over an extra
+                logger.exception("recommendation failed for %s", document.id)
+                db.rollback()
 
         # Both are partial failures, not fatal ones: an unreadable page still
         # leaves the rest of the document usable, and a page that was read but

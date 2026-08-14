@@ -80,21 +80,36 @@ class BuildResult:
 PRINTED_FLAGS = ("H", "L", "N", "A")
 
 
+# Symbols labs print beside an abnormal result instead of a letter. They say
+# 'this one is off' without saying which way, which is exactly what 'A' means.
+_ABNORMAL_MARKS = ("#", "*", "!", "†", "^")
+
+
 def _printed_flag(raw: Any) -> str | None:
-    """The lab's own flag, if it is one we can store.
+    """The lab's own flag, mapped onto the four the column will take.
 
     Labs mark an out-of-range result with whatever their software prints, and
-    it is not always a letter: one report here uses '#'. Taking the first
-    character and storing it violated the CHECK constraint, which aborted the
-    insert, poisoned the session, and left the whole document stranded in
-    'extracting' — one unrecognised character losing three pages of results.
+    it is not always a letter: the reports here use '#'. Storing that character
+    directly violated the CHECK constraint, which aborted the insert, poisoned
+    the session, and left the whole document stranded in 'extracting' — one
+    unrecognised character losing three pages of results.
 
-    Dropping it costs nothing. `computed_flag`, worked out from the reference
-    range, is the value everything downstream actually reads, and it is the one
-    to trust anyway: a lab that prints the wrong flag is precisely what this app
-    exists to catch.
+    So it is mapped rather than dropped. Dropping it looked free while
+    `computed_flag` was doing the work, but computed_flag is derived from the
+    reference range, and a range this parser cannot read leaves the reading with
+    no verdict at all. The lab's own mark is the only signal that survives a
+    range we failed to parse, and the laboratory is a better authority on its
+    own result than our arithmetic is.
+
+    Anything unrecognised is still dropped. A flag column is read as a clinical
+    statement, and a value invented from an unfamiliar symbol would be one.
     """
-    letter = (str(raw) if raw is not None else "").strip().upper()[:1]
+    text = (str(raw) if raw is not None else "").strip()
+    if not text:
+        return None
+    if text[:1] in _ABNORMAL_MARKS:
+        return "A"
+    letter = text.upper()[:1]
     return letter if letter in PRINTED_FLAGS else None
 
 

@@ -304,11 +304,19 @@ function Viewer({ document: doc, onClose }: { document: DocumentRead; onClose: (
             flex: 1,
             overflow: "auto",
             background: "var(--color-surface)",
-            display: "grid",
-            placeItems: "center",
+            display: "flex",
+            flexDirection: "column",
             minHeight: 220,
           }}
         >
+          <div
+            style={{
+              flex: 1,
+              display: "grid",
+              placeItems: "center",
+              minHeight: 200,
+            }}
+          >
           {error && <p style={{ padding: 28, color: "var(--color-danger-text)" }}>{error}</p>}
 
           {/* A row whose file did not survive an early redeploy. Said plainly:
@@ -345,6 +353,7 @@ function Viewer({ document: doc, onClose }: { document: DocumentRead; onClose: (
                 style={{ maxWidth: "100%", display: "block" }}
               />
             ))}
+          </div>
         </div>
       </div>
     </div>,

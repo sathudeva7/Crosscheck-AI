@@ -114,6 +114,40 @@ def atc_families(event: TimelineEvent) -> set[str]:
     return {code[:ATC_PREFIX] for code in (event.atc_codes or []) if len(code) >= ATC_PREFIX}
 
 
+def regimen(event: TimelineEvent) -> dict[str, Any]:
+    """One medicine as this patient's record actually holds it.
+
+    Findings carry this so that the wording written from them can name a real
+    dose on a real date. Without it the evidence is two drug names and a
+    severity, and an explanation built from that has nothing patient-specific
+    to say — it reaches for what the model knows about the drugs in general,
+    which is exactly what a record-driven warning is not supposed to do.
+
+    `display_text` is the source rather than the strength and frequency
+    columns reassembled here. It is what the timeline already shows, and
+    `_rebuild` in ingest/timeline.py rewrites it from the columns whenever a
+    person corrects a row, so the two cannot drift apart. Assembling a second
+    phrasing in this module would eventually contradict the first.
+
+    `document.extraction_json` is deliberately not the source either. It keeps
+    what the model said on the first read; a dose the user has since corrected
+    still sits there at its old value, and a warning quoting it would
+    contradict the timeline printed beside it.
+    """
+    started = event.start_date or event.event_date
+    printed = (event.source_span or event.drug_raw or "").strip()
+    fields = {
+        "drug": event.drug_name or event.drug_raw,
+        "display": event.display_text,
+        # Only when it adds something: for a typed prescription the printed
+        # line and the parsed one are usually the same sentence twice.
+        "as_printed": printed if printed and printed != event.display_text else None,
+        "started": str(started) if started else None,
+        "until": str(event.end_date) if event.end_date else None,
+    }
+    return {key: value for key, value in fields.items() if value}
+
+
 def checkable(events) -> list[TimelineEvent]:
     """Medicines that can actually be checked: identified, and not rejected.
 
