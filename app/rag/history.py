@@ -102,10 +102,35 @@ def replay(rows: list[QaMessage]) -> list[AnyMessage]:
     an answer are for the reader, and feeding them back would invite the model
     to treat its own past summary as a source — the facts have to come from a
     tool on this turn or they do not count.
+
+    A refused turn does not cross over at all — neither the refusal nor the
+    message that earned it. Without that, blocking is theatre: the guard reads
+    one question at a time, so an attempt refused at 10:00 would be replayed
+    into the agent's context at 10:01 as established conversation, arriving
+    behind the guard rather than in front of it. Ask the injection, get refused,
+    then ask 'what did I say earlier?' and it lands anyway. The refusal itself
+    is dropped for a smaller reason: it is the only assistant turn in the
+    transcript that no tool backs, and a model shown its own unexplained refusal
+    tends to repeat it.
+
+    The transcript keeps both. This governs what the *model* is shown, not what
+    the reader sees — a blocked turn stays visible on the screen it happened on.
     """
+    kept: list[QaMessage] = []
+    for row in rows:
+        if row.role == "assistant" and row.blocked:
+            # The provoking question is the user row immediately before. One,
+            # not every trailing one: a question whose answer failed outright
+            # also leaves an unpaired user row, and that one was never judged
+            # unsafe.
+            if kept and kept[-1].role == "user":
+                kept.pop()
+            continue
+        kept.append(row)
+
     return [
         HumanMessage(row.content) if row.role == "user" else AIMessage(row.content)
-        for row in rows
+        for row in kept
         if row.content
     ]
 
@@ -162,7 +187,8 @@ def add_answer(
     *,
     truncated: bool = False,
 ) -> QaMessage:
-    """Record an answer with everything that qualified it."""
+    """Record an answer with everything that qualified it, and what it cost."""
+    usage = result.get("usage") or {}
     row = QaMessage(
         session_id=session_id,
         role="assistant",
@@ -176,6 +202,17 @@ def add_answer(
         web=_jsonable(result.get("web") or []),
         tool_calls=list(result.get("tool_calls") or []),
         truncated=truncated,
+        blocked=result.get("blocked", False),
+        block_reason=result.get("block_reason"),
+        # Kept even on a truncated answer. The tokens were spent whether or not
+        # the reader stayed to read them, and a bill that only counts finished
+        # answers understates what the month actually cost.
+        cost_model=usage.get("model"),
+        cost_calls=usage.get("calls"),
+        input_tokens=usage.get("input_tokens"),
+        output_tokens=usage.get("output_tokens"),
+        cost_usd=usage.get("cost_usd"),
+        cost_by_node=usage.get("by_node") or None,
     )
     db.add(row)
     db.flush()

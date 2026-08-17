@@ -25,6 +25,7 @@ from app.db.models import Patient, QaSession
 from app.db.session import SessionLocal, get_db
 from app.rag import history
 from app.rag.agent import ask, astream_answer
+from app.rag.cost import Usage
 from app.schemas.qa import (
     AskRequest,
     AskResponse,
@@ -176,17 +177,23 @@ def _event(payload: dict) -> str:
     return f"data: {json.dumps(payload, default=str)}\n\n"
 
 
-def _salvage(session_id: UUID, answer: str) -> None:
+def _salvage(session_id: UUID, answer: str, usage: Usage | None = None) -> None:
     """Keep a half-written answer when the reader disconnects mid-stream.
 
     On its own connection. By the time this runs the request is being torn
     down and the dependency-injected session is on its way out, so borrowing it
     would be a race — and the whole point is to write something at the moment
     everything else is being abandoned.
+
+    The cost of what was spent before the disconnection is written too. Those
+    tokens were bought.
     """
     db = SessionLocal()
     try:
-        history.add_answer(db, session_id, {"answer": answer}, truncated=True)
+        result: dict = {"answer": answer}
+        if usage is not None and usage.calls:
+            result["usage"] = usage.as_dict()
+        history.add_answer(db, session_id, result, truncated=True)
         history.touch(db, session_id)
         db.commit()
     except Exception:  # noqa: BLE001 - nothing left to report to
@@ -224,6 +231,10 @@ async def ask_streaming(
 
     session_id, title = session.id, session.title
 
+    # Owned out here rather than inside the agent so the cost survives the
+    # generator being cancelled — see _salvage.
+    usage = Usage()
+
     async def events():
         answer = ""
         finished = False
@@ -234,7 +245,9 @@ async def ask_streaming(
             # stops mid-sentence should end the request, not hold the
             # connection open forever emitting nothing.
             async with asyncio.timeout(QA_TIMEOUT_SECONDS):
-                async for event in astream_answer(db, patient.id, body.question, replay):
+                async for event in astream_answer(
+                    db, patient.id, body.question, replay, usage
+                ):
                     if event["type"] == "token":
                         answer += event.get("text", "")
                     elif event["type"] == "done":
@@ -262,7 +275,7 @@ async def ask_streaming(
             # question left visibly half-answered reads better on return than
             # one that appears to have been ignored.
             if not finished and answer.strip():
-                _salvage(session_id, answer)
+                _salvage(session_id, answer, usage)
 
     return StreamingResponse(
         events(),

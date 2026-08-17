@@ -50,6 +50,27 @@ export interface WebSource {
   title: string | null;
 }
 
+/**
+ * What an answer cost to produce.
+ *
+ * One question is three to eight model calls — a lookup decision per gathering
+ * round, then composing, then verifying — and `calls` is how many it took.
+ *
+ * `cost_usd` is nullable for the same reason `confidence` is: null means not
+ * known, never free. It comes back null when the model in use has no price on
+ * file server-side, and the screen has to be able to say so rather than
+ * printing $0.00 next to work that was billed.
+ */
+export interface Usage {
+  model: string | null;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cost_usd: number | null;
+  /** Spend per graph node — 'agent', 'compose', 'verify'. Diagnostic. */
+  by_node: Record<string, { calls: number; input_tokens: number; output_tokens: number; cost_usd: number | null }>;
+}
+
 export interface Answer {
   answer: string;
   /** Which conversation it landed in — the id of a new one, if none was named. */
@@ -67,6 +88,18 @@ export interface Answer {
   unsupported: string[] | null;
   /** What was consulted, in order — the trace view. */
   tool_calls: string[];
+  /** Tokens and cost. Null if metering found nothing to report. */
+  usage: Usage | null;
+  /**
+   * The question was refused before anything was looked up — it read as an
+   * attempt to change how the agent works rather than as a question.
+   *
+   * Sent as its own flag rather than left to be inferred, because a refusal and
+   * a good answer that found nothing look identical from the other fields: both
+   * arrive unscored, with no citations and no tools consulted. They must not
+   * render the same, so the screen is told which it has.
+   */
+  blocked: boolean;
   disclaimer: string;
 }
 
@@ -99,8 +132,12 @@ export interface Message {
   grounded: boolean;
   unsupported: string[] | null;
   tool_calls: string[];
+  /** Null on a question, and on any answer stored before metering existed. */
+  usage: Usage | null;
   /** The reader left before this answer finished. It is deliberately partial. */
   truncated: boolean;
+  /** This turn was refused by the input guard. See `Answer.blocked`. */
+  blocked: boolean;
   /** Sent by the server rather than written here — it is safety wording. */
   disclaimer: string;
 }

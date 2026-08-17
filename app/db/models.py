@@ -671,11 +671,62 @@ class QaMessage(Base):
 
     truncated: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
 
+    # --- refused rather than answered ----------------------------------------
+    #
+    # The input guard judged the question an attempt to rewrite the agent's
+    # instructions, so nothing was looked up and `content` is the fixed refusal.
+    # Stored as an ordinary assistant message because it is one as far as the
+    # transcript is concerned: a turn the reader has to be able to see on reload.
+    blocked: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    # The technique the guard named. Kept for counting attempts over time and
+    # deliberately never sent to the browser — telling an attacker which
+    # phrasing was recognised is free feedback on the next attempt.
+    block_reason: Mapped[str | None] = mapped_column(Text)
+
+    # --- what it cost --------------------------------------------------------
+    #
+    # Columns rather than one JSON blob, because the questions asked of this are
+    # aggregate ones — spend per patient, per day, per model — and those want a
+    # SUM over a column, not a cast out of JSONB on every row. All nullable:
+    # a user message never had a cost, and every row written before metering
+    # existed reads back as 'not known' rather than as zero.
+    cost_model: Mapped[str | None] = mapped_column(String)
+    # How many model calls the one answer took. Null means it was never metered;
+    # that is different from an answer that took none, which cannot happen.
+    cost_calls: Mapped[int | None] = mapped_column(Integer)
+    input_tokens: Mapped[int | None] = mapped_column(Integer)
+    output_tokens: Mapped[int | None] = mapped_column(Integer)
+    # Numeric, not Float. Fractions of a cent summed over a few thousand
+    # questions is exactly where binary floating point starts to embarrass
+    # itself, and this number may one day be shown to someone paying it.
+    cost_usd: Mapped[Decimal | None] = mapped_column(Numeric(12, 6))
+    # Spend per graph node. Diagnostic rather than aggregate — nobody sums this
+    # across patients — so JSONB is the right shape for it.
+    cost_by_node: Mapped[dict[str, Any] | None] = mapped_column(JSONB)
+
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), nullable=False
     )
 
     session: Mapped[QaSession] = relationship(back_populates="messages")
+
+    @property
+    def usage(self) -> dict[str, Any] | None:
+        """The cost columns, in the shape the API sends.
+
+        A property so a reopened transcript reports usage the same way a live
+        answer does, without the schema having to know these were six columns.
+        """
+        if self.cost_calls is None:
+            return None
+        return {
+            "model": self.cost_model,
+            "calls": self.cost_calls,
+            "input_tokens": self.input_tokens or 0,
+            "output_tokens": self.output_tokens or 0,
+            "cost_usd": float(self.cost_usd) if self.cost_usd is not None else None,
+            "by_node": self.cost_by_node or {},
+        }
 
     def __repr__(self) -> str:
         return f"<QaMessage {self.role} {self.content[:40]!r}>"

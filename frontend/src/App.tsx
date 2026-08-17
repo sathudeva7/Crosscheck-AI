@@ -24,6 +24,7 @@ import { useAuth } from "./lib/useAuth";
 import { ReviewCountProvider } from "./lib/useReviewCount";
 import { landingRoute } from "./lib/auth";
 import AppShell from "./components/AppShell";
+import LandingPage from "./pages/LandingPage";
 import LoginPage from "./pages/LoginPage";
 import ProcessingPage from "./pages/ProcessingPage";
 import RegisterPage from "./pages/RegisterPage";
@@ -82,11 +83,25 @@ function RedirectIfSignedIn({ children }: { children: ReactNode }) {
   return <>{children}</>;
 }
 
-/** `/` and anything unrecognised: send the visitor where they belong. */
+/**
+ * `/` — the public page, unless the visitor is already signed in.
+ *
+ * Someone with a session has no use for the pitch; they came back for their
+ * records. Someone without one gets the page that explains what this is before
+ * being asked to upload their prescriptions.
+ */
 function Landing() {
   const { state } = useAuth();
   if (state.status === "loading") return <Splash />;
-  return <Navigate to={landingRoute(state)} replace />;
+  if (state.status !== "signed-out") return <Navigate to={landingRoute(state)} replace />;
+  return <LandingPage />;
+}
+
+/** Anything unrecognised: send the visitor where they belong, silently. */
+function NotFound() {
+  const { state } = useAuth();
+  if (state.status === "loading") return <Splash />;
+  return <Navigate to={state.status === "signed-out" ? "/" : landingRoute(state)} replace />;
 }
 
 export default function App() {
@@ -173,7 +188,8 @@ export default function App() {
           {/* An unknown tab is a mistyped URL, not a 404 worth a screen. */}
           <Route path="*" element={<Navigate to="/app/timeline" replace />} />
         </Route>
-        <Route path="*" element={<Landing />} />
+        <Route path="/" element={<Landing />} />
+        <Route path="*" element={<NotFound />} />
       </Routes>
     </div>
   );

@@ -13,6 +13,12 @@ load_dotenv()
 RESPONSE_MODEL = os.getenv("RAG_RESPONSE_MODEL", "openai:gpt-5.4-mini")
 # Model used for grading retrieved docs (can be a cheaper model)
 GRADER_MODEL = os.getenv("RAG_GRADER_MODEL", "openai:gpt-5.4-mini")
+# Model that judges whether an incoming question is a prompt injection. It runs
+# before anything else on every question, so the patient waits for it — the
+# cheapest model that can read intent is the right one here, and it is a
+# separate setting from the grader precisely so it can be dropped to one
+# without also downgrading verification.
+GUARD_MODEL = os.getenv("RAG_GUARD_MODEL", GRADER_MODEL)
 
 # --- web lookup ---------------------------------------------------------------
 #

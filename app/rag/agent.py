@@ -6,14 +6,22 @@ exists alongside the older `graph.py`: a graph compiled once at import can only
 ever hold one patient's tools, and the first patient to load it would answer
 everyone's questions.
 
-Four nodes, in one direction:
+Five nodes, in one direction:
 
-    agent ⇄ tools  →  compose  →  verify
+    guard  →  agent ⇄ tools  →  compose  →  verify
+      └────────────────────────────────────────────→ (blocked)
 
+`guard` decides whether the question is a question at all — see rag/guard.py.
 `agent` decides what to look up. `tools` runs the lookups and, on the way past,
 records what was touched. `compose` writes the sentence, once. `verify` checks
 the sentence against what the tools actually returned, and only then is a
 confidence attached.
+
+The guard is a node rather than a check in the router for two reasons. It is a
+model call, so inside the graph it is metered by the same callback as every
+other one and shows up in the cost breakdown under its own name; and both entry
+points below go through the graph, so a gate placed here cannot be forgotten by
+one of them.
 
 Verification labels the answer; it does not gate it. It used to send a failed
 draft back to be rewritten, up to twice, and that was wrong in two ways. It was
@@ -61,6 +69,8 @@ from app.db.models import TimelineEvent
 
 from app.ingest.review import DEFAULT_PRIOR, MODALITY_PRIOR, THRESHOLDS
 from app.rag.config import GRADER_MODEL, RESPONSE_MODEL
+from app.rag.cost import CostCallback, Usage
+from app.rag.guard import check_question
 from app.rag.tools import build_tools
 
 logger = logging.getLogger(__name__)
@@ -76,8 +86,12 @@ MAX_TOOL_ROUNDS = 6
 HANDLE = "E"
 
 
-answering_model = init_chat_model(RESPONSE_MODEL, temperature=0)
-verifying_model = init_chat_model(GRADER_MODEL, temperature=0)
+# stream_usage because composing is streamed to the reader token by token, and
+# OpenAI omits the usage block from a streamed response unless it is asked for.
+# Without it the single most expensive call in the question reports nothing and
+# the cost comes out plausibly low, which is the hardest kind of wrong to spot.
+answering_model = init_chat_model(RESPONSE_MODEL, temperature=0, stream_usage=True)
+verifying_model = init_chat_model(GRADER_MODEL, temperature=0, stream_usage=True)
 
 
 # --- what the answer is allowed to be ----------------------------------------
@@ -262,6 +276,13 @@ class AgentState(TypedDict, total=False):
     rounds: int
     answer: str
     verdict: dict[str, Any]
+
+    # Set by the guard node. `blocked` true means nothing after it ran: no
+    # lookup, no compose, no verify, and `answer` is the fixed refusal above.
+    # `block_reason` is the technique the judge named, kept for the log and the
+    # transcript and never shown in the reply.
+    blocked: bool
+    block_reason: str | None
 
 
 # --- evidence ----------------------------------------------------------------
@@ -583,6 +604,41 @@ def build_agent(db: Session, patient_id: UUID):
     by_name = {tool.name: tool for tool in tools}
     gathering_model = answering_model.bind_tools(tools)
 
+    async def guard(state: AgentState) -> dict[str, Any]:
+        """Refuse what this app does not answer, and what is trying to rewrite it.
+
+        First, so that a refused question costs one small call rather than the
+        three to eight a real one takes — and so an attempt never reaches a
+        model holding tools. 'What is 2+2' used to cost four calls and a search
+        of the patient's prescriptions for arithmetic.
+
+        Only the new question is judged, not the replayed history. Earlier turns
+        were judged when they were asked, and rejudging them would mean an
+        attempt from twenty minutes ago poisoning every later question in the
+        conversation.
+        """
+        verdict = await check_question(state.get("question", ""))
+        if verdict.is_safe:
+            return {"blocked": False}
+
+        return {
+            "blocked": True,
+            "block_reason": verdict.reason,
+            "answer": verdict.refusal or "",
+            # Named explicitly rather than left to default. A blocked reply
+            # rests on no fact and must score as such: 'not grounded' would
+            # claim the verifier looked at it, and it never ran.
+            "verdict": {
+                "grounded": True,
+                "supported_by": [],
+                "confidence": None,
+                "band": "none",
+                "basis": "this question was not answered from the record",
+                "citations": [],
+                "web": [],
+            },
+        }
+
     async def agent(state: AgentState) -> dict[str, Any]:
         """Decide what to look up next, or that enough has been looked up."""
         reply = await gathering_model.ainvoke(
@@ -709,14 +765,23 @@ def build_agent(db: Session, patient_id: UUID):
             return "compose"
         return "tools" if state.get("rounds", 0) < MAX_TOOL_ROUNDS else "stop"
 
+    def after_guard(state: AgentState) -> Literal["agent", "blocked"]:
+        return "blocked" if state.get("blocked") else "agent"
+
     graph = StateGraph(AgentState)
+    graph.add_node("guard", guard)
     graph.add_node("agent", agent)
     graph.add_node("tools", run_tools)
     graph.add_node("stop", stop_gathering)
     graph.add_node("compose", compose)
     graph.add_node("verify", verify)
 
-    graph.add_edge(START, "agent")
+    graph.add_edge(START, "guard")
+    # Straight to END on a block. Not to compose with a note in the state —
+    # composing a refusal would put the attempted instruction in front of the
+    # model that holds the tools, which is the one thing this node exists to
+    # prevent.
+    graph.add_conditional_edges("guard", after_guard, {"agent": "agent", "blocked": END})
     graph.add_conditional_edges(
         "agent", after_agent, {"tools": "tools", "stop": "stop", "compose": "compose"}
     )
@@ -746,6 +811,16 @@ DISCLAIMER = (
 LIMITS = {"recursion_limit": MAX_TOOL_ROUNDS * 2 + 4 + 5}
 
 
+def _config(usage: Usage) -> dict[str, Any]:
+    """Run config for one question, metering into that question's own tally.
+
+    The meter is created per call and handed in rather than kept at module
+    scope: two people asking at once share this process, and a global counter
+    would add their questions together into a number belonging to neither.
+    """
+    return {**LIMITS, "callbacks": [CostCallback(usage, RESPONSE_MODEL)]}
+
+
 def _start(question: str, history: list[AnyMessage] | None) -> dict[str, Any]:
     return {
         "messages": [*(history or []), HumanMessage(question)],
@@ -755,7 +830,14 @@ def _start(question: str, history: list[AnyMessage] | None) -> dict[str, Any]:
     }
 
 
-def _answered(answer: str, verdict: dict[str, Any], tools: list[str]) -> dict[str, Any]:
+def _answered(
+    answer: str,
+    verdict: dict[str, Any],
+    tools: list[str],
+    usage: Usage | None = None,
+    blocked: bool = False,
+    block_reason: str | None = None,
+) -> dict[str, Any]:
     """The finished answer, in the shape the API promises."""
     return {
         "answer": answer,
@@ -767,6 +849,13 @@ def _answered(answer: str, verdict: dict[str, Any], tools: list[str]) -> dict[st
         "unsupported": verdict.get("unsupported") or None,
         "grounded": verdict.get("grounded", True),
         "tool_calls": tools,
+        "usage": usage.as_dict() if usage else None,
+        # A refused question still costs a guard call and still occupies a turn
+        # in the transcript, so it travels out looking like every other answer —
+        # with one flag saying what it is. A client that ignores the flag shows
+        # the refusal as text, which is the correct fallback.
+        "blocked": blocked,
+        "block_reason": block_reason,
         "disclaimer": DISCLAIMER,
     }
 
@@ -784,7 +873,10 @@ async def ask(
     persisted yet — the caller owns the history until the qa_session tables
     exist.
     """
-    final = await build_agent(db, patient_id).ainvoke(_start(question, history), LIMITS)
+    usage = Usage()
+    final = await build_agent(db, patient_id).ainvoke(
+        _start(question, history), _config(usage)
+    )
     return _answered(
         final.get("answer", ""),
         final.get("verdict", {}),
@@ -794,6 +886,9 @@ async def ask(
             if isinstance(message, AIMessage)
             for call in (getattr(message, "tool_calls", None) or [])
         ],
+        usage,
+        blocked=final.get("blocked", False),
+        block_reason=final.get("block_reason"),
     )
 
 
@@ -802,6 +897,7 @@ async def astream_answer(
     patient_id: UUID,
     question: str,
     history: list[AnyMessage] | None = None,
+    usage: Usage | None = None,
 ) -> AsyncIterator[dict[str, Any]]:
     """The same answer, delivered as it is produced.
 
@@ -825,15 +921,22 @@ async def astream_answer(
     Confidence cannot be streamed early and must not be guessed at: it is only
     known once composing has finished and the verifier has named which facts the
     answer actually leaned on.
+
+    `usage` may be passed in by a caller that wants the running cost even if the
+    stream never finishes — a reader who closes the tab still spent the tokens,
+    and a bill that only counts completed answers understates the month.
     """
     agent = build_agent(db, patient_id)
 
     answer = ""
     verdict: dict[str, Any] = {}
     tools: list[str] = []
+    blocked = False
+    block_reason: str | None = None
+    usage = usage if usage is not None else Usage()
 
     async for mode, chunk in agent.astream(
-        _start(question, history), LIMITS, stream_mode=["updates", "messages"]
+        _start(question, history), _config(usage), stream_mode=["updates", "messages"]
     ):
         if mode == "messages":
             message, meta = chunk
@@ -847,7 +950,19 @@ async def astream_answer(
             continue
 
         for node, update in chunk.items():
-            if node == "agent":
+            if node == "guard":
+                if not update.get("blocked"):
+                    continue
+                # The refusal is emitted as a token so a blocked turn arrives
+                # down the same channel as every other answer. A client that
+                # only knows about `token` and `done` — which is all any of them
+                # need to know — renders it without a new branch.
+                blocked = True
+                block_reason = update.get("block_reason")
+                answer = update.get("answer", "") or ""
+                verdict = update.get("verdict", {}) or {}
+                yield {"type": "token", "text": answer}
+            elif node == "agent":
                 names = [
                     call["name"]
                     for message in update.get("messages", [])
@@ -861,4 +976,10 @@ async def astream_answer(
             elif node == "verify":
                 verdict = update.get("verdict", {}) or {}
 
-    yield {"type": "done", **_answered(answer, verdict, tools)}
+    # Every model call has ended by now — the verifier's included, since a node's
+    # update is only published once the node has returned — so the tally is
+    # complete rather than a snapshot taken mid-flight.
+    yield {
+        "type": "done",
+        **_answered(answer, verdict, tools, usage, blocked=blocked, block_reason=block_reason),
+    }

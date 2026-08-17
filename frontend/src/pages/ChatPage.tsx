@@ -172,9 +172,74 @@ function WebLink({ source }: { source: WebSource }) {
   );
 }
 
+/**
+ * What the answer cost.
+ *
+ * Sits with the trace rather than with the confidence badge, because it says
+ * something about the machine and nothing about whether to trust the answer.
+ *
+ * A null `cost_usd` prints tokens alone. It means the server has no price on
+ * file for the model, not that the answer was free, and printing $0.00 there
+ * would be a smaller number than the truth rather than an absent one. Costs
+ * below a hundredth of a cent are shown as `<$0.0001` for the same reason in
+ * reverse — rounding them to $0.0000 says free, which they are not.
+ */
+function Meter({ usage }: { usage: NonNullable<Detail["usage"]> }) {
+  const tokens = usage.input_tokens + usage.output_tokens;
+  const money =
+    usage.cost_usd === null
+      ? null
+      : usage.cost_usd < 0.0001 && usage.cost_usd > 0
+        ? "<$0.0001"
+        : `$${usage.cost_usd.toFixed(4)}`;
+
+  // The breakdown on hover: which node spent it. An expensive question is
+  // nearly always too many gathering rounds, and the total cannot show that.
+  const breakdown = Object.entries(usage.by_node ?? {})
+    .map(([node, spend]) => `${node}: ${spend.calls}× ${spend.input_tokens + spend.output_tokens} tok`)
+    .join("\n");
+
+  return (
+    <span style={{ fontSize: 11.5, color: FAINT }} title={breakdown || undefined}>
+      {money && `${money} · `}
+      {tokens.toLocaleString()} tokens · {usage.calls} {usage.calls === 1 ? "call" : "calls"}
+    </span>
+  );
+}
+
 function Apparatus({ detail }: { detail: Detail }) {
   const band = BAND[detail.band] ?? BAND.none;
   const percent = detail.confidence === null ? null : Math.round(detail.confidence * 100);
+
+  // A refused question gets its own, much quieter, footer. The usual apparatus
+  // is a set of claims about how an answer was built — which facts, how well
+  // read, how much it cost to check — and none of them are true of a refusal.
+  // Showing 'Not scored' beneath one would suggest the record was consulted and
+  // came back thin, when it was never opened.
+  //
+  // The cost still shows. The guard call was billed like any other.
+  if (detail.blocked) {
+    return (
+      <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
+        <div
+          style={{
+            fontSize: 12.5,
+            padding: "7px 11px",
+            background: "var(--color-warning-bg)",
+            color: "var(--color-warning-text)",
+            borderLeft: "2px solid var(--color-warning)",
+          }}
+        >
+          Nothing was looked up for this message, so nothing here comes from your records.
+        </div>
+        {detail.usage && (
+          <div style={{ display: "flex", alignItems: "center", gap: 8, flexWrap: "wrap" }}>
+            <Meter usage={detail.usage} />
+          </div>
+        )}
+      </div>
+    );
+  }
 
   return (
     <div style={{ marginTop: 8, display: "flex", flexDirection: "column", gap: 8 }}>
@@ -273,6 +338,8 @@ function Apparatus({ detail }: { detail: Detail }) {
             Checked {[...new Set(detail.tool_calls.map(toolLabel))].join(", ")}
           </span>
         )}
+
+        {detail.usage && <Meter usage={detail.usage} />}
       </div>
 
       {detail.basis && (

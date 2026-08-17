@@ -55,7 +55,7 @@ wipes), `TAVILY_API_KEY`, `LANGSMITH_API_KEY`.
 app/
 ├── ingest/     upload → parse → transcribe → extract → normalise → timeline
 ├── checks/     interactions, duplicates, allergies, doses, lab trends
-├── rag/        the question-answering agent and its 11 tools
+├── rag/        guard → agent ⇄ tools → compose → verify, and the 11 tools
 ├── routers/    the HTTP API
 └── db/         models and forward-only SQL migrations
 frontend/       React app — timeline, interactions, trends, chat, review

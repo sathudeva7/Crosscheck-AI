@@ -63,6 +63,27 @@ class WebSource(BaseModel):
     title: str | None = None
 
 
+class Usage(BaseModel):
+    """What the answer cost to produce.
+
+    `cost_usd` is nullable for the same reason `confidence` is: null means not
+    known, never zero. A model with no price on file reports its tokens and
+    withholds the figure rather than being charged at some other model's rate.
+    """
+
+    model: str | None = None
+    calls: int = 0
+    input_tokens: int = 0
+    output_tokens: int = 0
+    cost_usd: float | None = Field(
+        default=None, description="USD. Null when any call in the answer was unpriced."
+    )
+    # Spend per graph node — 'agent' for lookup decisions, 'compose', 'verify'.
+    # An expensive question is nearly always too many gathering rounds, and a
+    # single total cannot show that.
+    by_node: dict[str, Any] = Field(default_factory=dict)
+
+
 class AskResponse(BaseModel):
     answer: str
 
@@ -91,6 +112,22 @@ class AskResponse(BaseModel):
     tool_calls: list[str] = Field(
         default_factory=list, description="What was consulted, in order. For the trace view."
     )
+    usage: Usage | None = Field(
+        default=None, description="Tokens and cost. Null if metering found nothing to report."
+    )
+
+    # The input guard refused the question, and `answer` is a fixed refusal
+    # rather than a reading of the record. Nothing was looked up, so citations
+    # is empty and confidence is null — which is why the flag has to be sent
+    # rather than inferred: an unscored answer with no citations is also what a
+    # perfectly good 'no record of that' looks like, and the two must not render
+    # the same.
+    #
+    # The technique the guard named is deliberately *not* here. It goes to the
+    # log and the stored row; telling an attacker which phrasing was recognised
+    # is free feedback on the next attempt.
+    blocked: bool = False
+
     disclaimer: str
 
 
@@ -132,7 +169,14 @@ class MessageRead(BaseModel):
     unsupported: list[str] | None = None
     tool_calls: list[str] = Field(default_factory=list)
 
+    # Read off the cost columns by QaMessage.usage. Null on a user message, and
+    # on any answer written before metering existed.
+    usage: Usage | None = None
+
     truncated: bool = False
+    # This turn was refused by the input guard. `block_reason` is stored beside
+    # it in the database and is not part of this shape — see AskResponse.
+    blocked: bool = False
 
     # Sent rather than left to the client to supply. It is safety wording, and
     # a copy in the frontend is a copy that can drift from the one the answer
@@ -144,13 +188,15 @@ class MessageRead(BaseModel):
     # down and the client never has to test a field for null before rendering
     # it — `role` is the only branch it needs.
     @field_validator(
-        "band", "grounded", "citations", "web", "tool_calls", "truncated", mode="before"
+        "band", "grounded", "citations", "web", "tool_calls", "truncated", "blocked", mode="before"
     )
     @classmethod
     def _default_if_null(cls, value: Any, info: ValidationInfo) -> Any:
         if value is not None:
             return value
-        return {"band": "none", "grounded": True, "truncated": False}.get(info.field_name, [])
+        return {"band": "none", "grounded": True, "truncated": False, "blocked": False}.get(
+            info.field_name, []
+        )
 
 
 class TranscriptRead(BaseModel):
@@ -179,5 +225,7 @@ def from_agent(result: dict[str, Any], session_id: UUID) -> AskResponse:
         grounded=result.get("grounded", True),
         unsupported=result.get("unsupported"),
         tool_calls=result.get("tool_calls") or [],
+        usage=Usage(**result["usage"]) if result.get("usage") else None,
+        blocked=result.get("blocked", False),
         disclaimer=result["disclaimer"],
     )
