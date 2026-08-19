@@ -203,6 +203,14 @@ ECHANNELLING_SITE_URL = os.getenv("ECHANNELLING_SITE_URL", "https://www.echannel
 DOC990_BASE_URL = os.getenv("DOC990_BASE_URL", "https://www.doc.lk")
 DOC990_TIMEOUT = float(os.getenv("DOC990_TIMEOUT", 60))
 
+# Where each Doc990 town is. Doc990 gives no coordinates, so a town has to be
+# geocoded before 'within 150 km' can mean anything — and towns do not move, so
+# the answer is worth keeping between runs. 111 towns cover all 216 hospitals;
+# without this file that is 111 lookups on the first search after every restart.
+DOC990_TOWN_CACHE_PATH = Path(
+    os.getenv("DOC990_TOWN_CACHE_PATH", PROJECT_ROOT / "data" / "doc990_towns.json")
+)
+
 # How many hospitals near the patient to ask Doc990 about. Its search cannot
 # filter by location, so each one costs a request and a 3 MB page; six covers a
 # city without turning one search into a crawl.
