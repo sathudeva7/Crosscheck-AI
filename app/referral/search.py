@@ -32,14 +32,18 @@ trips. Google is only asked about the handful of rows actually being shown.
 
 from __future__ import annotations
 
+import json
 import logging
+import tempfile
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
+from pathlib import Path
 
 import httpx
 
 from app.config import (
     DOC990_MAX_HOSPITALS,
+    DOC990_TOWN_CACHE_PATH,
     ENABLE_DOC990,
     ENABLE_ECHANNELLING,
     ENABLE_PLACES,
@@ -300,44 +304,167 @@ def _doc990_specialisation(specialty: Specialty, catalogue: dict[str, str]) -> s
     return None
 
 
+# Sri Lanka, generously boxed. Doc990's town field is not always a town — it
+# holds '07', 'Breast Care Clinic' and 'Borella by Dr. Senadhi Bangamuarachchi'
+# among the real place names, and Google will cheerfully geocode those to
+# somewhere in the world. A coordinate outside this box is a wrong answer to a
+# question about a Sri Lankan hospital, and dropping it costs only the ranking
+# of a hospital that was mislabelled anyway.
+_LK_BOUNDS = (5.5, 10.2, 79.2, 82.2)  # lat_min, lat_max, lon_min, lon_max
+
+# town -> coordinates, or None for 'asked, and it is not a place'. None is
+# cached as deliberately as a hit: without it, every search re-asks Google
+# about 'Breastfeeding Clinic' forever.
+_towns: dict[str, tuple[float, float] | None] | None = None
+
+
+def _load_towns() -> dict[str, tuple[float, float] | None]:
+    global _towns
+    if _towns is None:
+        try:
+            raw = json.loads(DOC990_TOWN_CACHE_PATH.read_text())
+            _towns = {
+                key: (tuple(value) if value else None) for key, value in raw.items()
+            }
+        except (FileNotFoundError, json.JSONDecodeError):
+            _towns = {}
+    return _towns
+
+
+def _save_towns() -> None:
+    """Written atomically, so an interrupted search cannot corrupt the file."""
+    if not _towns:
+        return
+    try:
+        DOC990_TOWN_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+        with tempfile.NamedTemporaryFile(
+            "w", dir=DOC990_TOWN_CACHE_PATH.parent, delete=False, encoding="utf-8"
+        ) as handle:
+            json.dump(_towns, handle, indent=2, ensure_ascii=False, sort_keys=True)
+            temporary = Path(handle.name)
+        temporary.replace(DOC990_TOWN_CACHE_PATH)
+    except OSError as exc:
+        # A read-only filesystem must not fail a search. The cache is an
+        # optimisation; the coordinates are already in memory for this process.
+        logger.info("could not write the town cache: %s", exc)
+
+
+def _place_towns(
+    hospitals: list[doc990.Hospital],
+    places: PlacesClient | None,
+) -> dict[str, tuple[float, float]]:
+    """Where each Doc990 town is, geocoded once and remembered.
+
+    This is what makes a radius mean kilometres for a directory that publishes
+    no coordinates. It is affordable because it is per *town*: 216 hospitals
+    share 111 towns, the answers are cached to disk, and towns do not move — so
+    the second search of a town costs nothing and the second run of the process
+    costs nothing either.
+
+    Geocoding per hospital, which this replaces, was the thing that could not
+    be afforded: 111 lookups on one search, every search, to rank places that
+    were mostly discarded.
+    """
+    if places is None:
+        return {}
+
+    known = _load_towns()
+    wanted = {
+        (hospital.city or "").strip()
+        for hospital in hospitals
+        if (hospital.city or "").strip()
+    }
+    missing = sorted(town for town in wanted if town.lower() not in known)
+
+    if missing:
+        logger.info("geocoding %d new Doc990 town(s)", len(missing))
+
+        def _look(town: str) -> tuple[str, tuple[float, float] | None]:
+            try:
+                return town, places.geocode(town)
+            except PlacesUnavailable as exc:
+                logger.info("could not place %r: %s", town, exc)
+                return town, None
+
+        # Independent lookups, and the first search after a deploy has all 111
+        # of them to do. In series that is the sixteen seconds this function
+        # exists to avoid.
+        with ThreadPoolExecutor(max_workers=8) as pool:
+            for town, found in pool.map(_look, missing):
+                lat_min, lat_max, lon_min, lon_max = _LK_BOUNDS
+                if found and not (lat_min <= found[0] <= lat_max and lon_min <= found[1] <= lon_max):
+                    logger.info("ignoring %r: geocoded outside Sri Lanka to %s", town, found)
+                    found = None
+                known[town.lower()] = found
+        _save_towns()
+
+    return {town: known[town.lower()] for town in wanted if known.get(town.lower())}
+
+
 def _hospitals_near(
     hospitals: list[doc990.Hospital],
     location: str,
     origin: tuple[float, float],
     radius_km: int,
     radii_last: int,
+    towns: dict[str, tuple[float, float]] | None = None,
     want: int = 1,
 ) -> list[tuple[float, doc990.Hospital]]:
-    """Doc990 hospitals within a radius, cheapest test first.
+    """Doc990 hospitals within a radius, nearest first.
 
-    A hospital in the town the patient named needs no lookup at all — Doc990
-    writes the town into the name, and 'Asiri Hospital - Kandy' is in Kandy.
-    Only when the search widens past that is anything geocoded, which keeps the
-    common case free instead of pricing 215 hospitals into every request.
+    Two ways a hospital gets a distance, cheapest first:
+
+      the patient's own town, matched by name — no lookup at all, and 0 km
+      its town's coordinates, geocoded once by `_place_towns` and cached
+
+    The radius is a real one. It used to be a label: hospitals were sorted into
+    'in the town the patient typed' and 'everywhere else', nothing was measured,
+    and the second pile was only ever offered when the first was empty. A
+    patient in Jaffna therefore never saw the cardiologist at Abishaa Hospital
+    in Vavuniya, 114 km away and well inside the 150 km rung — because Jaffna
+    has two hospitals of its own, neither with a cardiologist, and their mere
+    existence pinned every rung to them. 'None within 400 km' was printed by
+    code that had measured nothing.
     """
-    near: list[tuple[float, doc990.Hospital]] = []
-    rest: list[doc990.Hospital] = []
+    towns = towns or {}
+    found: list[tuple[float, doc990.Hospital]] = []
+    unplaced: list[doc990.Hospital] = []
 
     for hospital in hospitals:
-        if not (hospital.city or "").strip():
+        city = (hospital.city or "").strip()
+        if not city:
             continue
-        if _same_town(hospital.city, location):
-            near.append((0.0, hospital))
-        else:
-            rest.append(hospital)
+        if _same_town(city, location):
+            found.append((0.0, hospital))
+            continue
 
-    if near or radius_km < radii_last:
-        # A hospital whose name ends in the town the patient named is in that
-        # town, and that is the whole test. Working out where every other
-        # hospital in the country is cost 111 geocodes on a Vavuniya search —
-        # sixteen seconds to rank places that were then discarded.
-        return sorted(near, key=lambda row: row[0])[: max(want, 1) * 4]
+        where = towns.get(city)
+        if where is None:
+            # No coordinates for this town — a name Google could not place, or
+            # no Google at all. Held back rather than dropped: the last rung
+            # still offers it, which is what this function did for every
+            # out-of-town hospital before towns were geocoded.
+            unplaced.append(hospital)
+            continue
 
-    # Nothing in the patient's own town and the ladder has run out of rungs.
-    # Offering hospitals elsewhere, unranked, beats offering nothing: the
-    # distance for the few actually shown is filled in later from their Google
-    # listing, which is fetched for the address regardless.
-    return [(float("inf"), hospital) for hospital in rest[: max(want, 1) * 4]]
+        distance = haversine_km(origin[0], origin[1], where[0], where[1])
+        if distance <= radius_km:
+            found.append((distance, hospital))
+
+    if found:
+        return sorted(found, key=lambda row: row[0])[: max(want, 1) * 4]
+
+    if radius_km < radii_last:
+        # Nothing within this rung. Say so honestly and let the ladder widen —
+        # the next rung is a larger circle over the same, already-cached,
+        # coordinates and costs nothing but the arithmetic.
+        return []
+
+    # The ladder is out of rungs and nothing could be placed near the patient.
+    # Offering hospitals whose towns are unknown, unranked, beats offering
+    # nothing: the distance for the few actually shown is filled in later from
+    # their Google listing, which is fetched for the address regardless.
+    return [(float("inf"), hospital) for hospital in unplaced[: max(want, 1) * 4]]
 
 
 def find_doc990_doctors(
@@ -397,6 +524,11 @@ def find_doc990_doctors(
                 # thirty of them to look at six hospitals.
                 asked: dict[str, list[doc990.Doctor]] = {}
 
+                # Once per search, not once per rung: the rungs are circles
+                # over the same coordinates, and widening 5 -> 10 km must not
+                # cost a second round of geocoding.
+                placed = _place_towns(list(hospitals.values()), places)
+
                 for radius in radii:
                     near = _hospitals_near(
                         list(hospitals.values()),
@@ -404,6 +536,7 @@ def find_doc990_doctors(
                         origin,
                         radius,
                         radii[-1],
+                        towns=placed,
                         want=DOC990_MAX_HOSPITALS,
                     )[:DOC990_MAX_HOSPITALS]
 

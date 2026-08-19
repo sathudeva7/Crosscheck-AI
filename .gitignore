@@ -1,8 +1,6 @@
 # --- secrets -----------------------------------------------------------------
 # .env holds the OpenAI key and the database password. .env.example is the
 # committed template; anything else named .env belongs to one machine only.
-.env
-.env.*
 !.env.example
 
 # --- patient data ------------------------------------------------------------
@@ -18,6 +16,8 @@ data/ddinter/
 data/ddinter_rxcui.json
 # Answers already looked up from RxNorm. Rebuilds itself as documents are read.
 data/drug_cache.json
+# Where each Doc990 town is. Geocoded once, and rebuilt on demand if deleted.
+data/doc990_towns.json
 
 # --- environments ------------------------------------------------------------
 .venv/
@@ -36,3 +36,4 @@ dist/
 .DS_Store
 .idea/
 *.swp
+config.bat
