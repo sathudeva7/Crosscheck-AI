@@ -27,6 +27,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { createPortal } from "react-dom";
 import { useSearchParams } from "react-router-dom";
 import { describeError } from "../lib/errors";
+import { Markdown } from "../lib/markdown";
 import {
   BAND,
   STARTERS,
@@ -359,7 +360,9 @@ function Apparatus({ detail }: { detail: Detail }) {
           <strong style={{ fontFamily: "var(--font-heading)", color: "var(--color-text)" }}>
             Could not be traced to your records:
           </strong>{" "}
-          {detail.unsupported.join(" · ")}
+          {/* Each untraceable claim is quoted out of the answer, so it carries
+              the same markdown the answer did. */}
+          <Markdown text={detail.unsupported.join(" · ")} />
         </div>
       )}
 
@@ -414,7 +417,7 @@ function Bubble({ entry, initials }: { entry: Entry; initials: string }) {
                 }),
           }}
         >
-          {entry.text}
+          <Markdown text={entry.text} />
         </div>
         {entry.detail && <Apparatus detail={entry.detail} />}
       </div>
@@ -983,7 +986,11 @@ export default function ChatPage() {
                     border: "1px solid var(--color-divider)",
                   }}
                 >
-                  {partial}
+                  {/* Mid-stream a '**' may have arrived without its closing
+                      pair yet. renderInline leaves an unmatched marker alone,
+                      so it shows for a keystroke and then resolves — better
+                      than the alternative of the whole tail going bold. */}
+                  <Markdown text={partial} />
                 </div>
               )}
             </div>
